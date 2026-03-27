@@ -55,6 +55,37 @@ function formatMessage(msg) {
   };
 }
 
+function toEpochMs(value) {
+  if (value === null || value === undefined) return 0;
+  if (typeof value === "number") return Number.isFinite(value) && value > 0 ? value : 0;
+  if (typeof value === "bigint") return value > 0n ? Number(value) : 0;
+
+  const parsed = Number(typeof value === "string" ? value : value.toString?.() ?? value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
+async function getLastMessageTimeByMid() {
+  const boxes = await lineClient.base.talk.getMessageBoxes({
+    messageBoxListRequest: {},
+  });
+  const lastMessageTimeByMid = new Map();
+  for (const box of boxes?.messageBoxes ?? []) {
+    const mid = box?.id ? String(box.id) : "";
+    if (!mid) continue;
+    const deliveredTime = toEpochMs(box?.lastDeliveredMessageId?.deliveredTime);
+    lastMessageTimeByMid.set(mid, deliveredTime);
+  }
+  return lastMessageTimeByMid;
+}
+
+function sortByLastMessageTimeDesc(chats) {
+  chats.sort((a, b) => {
+    const timeDiff = (b.lastMessageTime ?? 0) - (a.lastMessageTime ?? 0);
+    if (timeDiff !== 0) return timeDiff;
+    return String(a.name ?? "").localeCompare(String(b.name ?? ""), "ja");
+  });
+}
+
 // --- REST API ---
 
 // Auth status
@@ -117,6 +148,7 @@ app.get("/api/groups", async (_req, res) => {
     const chatMids = result?.memberChatMids ?? [];
     const groupMids = chatMids.filter((mid) => String(mid).startsWith("c"));
     if (groupMids.length === 0) return res.json({ groups: [] });
+    const lastMessageTimeByMid = await getLastMessageTimeByMid();
 
     const chunkSize = 50;
     const groups = [];
@@ -125,14 +157,17 @@ app.get("/api/groups", async (_req, res) => {
       const raw = await lineClient.base.talk.getChats({ chatMids: chunk });
       for (const chat of raw?.chats ?? []) {
         const picturePath = chat.picturePath ?? "";
+        const mid = String(chat.chatMid ?? "");
         groups.push({
-          mid: String(chat.chatMid ?? ""),
-          name: chat.chatName ?? chat.chatMid ?? "",
+          mid,
+          name: chat.chatName ?? mid,
           avatarUrl: picturePath ? LINE_PROFILE_CDN + picturePath : null,
           memberCount: chat.memberCount ?? 0,
+          lastMessageTime: lastMessageTimeByMid.get(mid) ?? 0,
         });
       }
     }
+    sortByLastMessageTimeDesc(groups);
     res.json({ groups });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -148,6 +183,7 @@ app.get("/api/friends", async (_req, res) => {
     });
     const mids = result?.userFriendMids ?? [];
     if (mids.length === 0) return res.json({ friends: [] });
+    const lastMessageTimeByMid = await getLastMessageTimeByMid();
 
     // Use talk.getContacts which works for this account type
     const chunkSize = 50;
@@ -156,9 +192,12 @@ app.get("/api/friends", async (_req, res) => {
       const chunk = mids.slice(i, i + chunkSize);
       const raw = await lineClient.base.talk.getContacts({ mids: chunk });
       for (const c of raw ?? []) {
-        contacts.push(formatContact(c));
+        const contact = formatContact(c);
+        contact.lastMessageTime = lastMessageTimeByMid.get(String(contact.mid)) ?? 0;
+        contacts.push(contact);
       }
     }
+    sortByLastMessageTimeDesc(contacts);
     res.json({ friends: contacts });
   } catch (e) {
     res.status(500).json({ error: e.message });

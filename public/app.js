@@ -190,6 +190,7 @@
         messageCache[chatMid] = [];
       }
       messageCache[chatMid].push(msg);
+      updateChatLastMessageTime(chatMid, msg.createdTime);
 
       if (selectedChat && String(selectedChat.mid) === chatMid) {
         appendMessageEl(msg, selectedChat.isGroup);
@@ -245,14 +246,14 @@
         setListMessage(friendList, data && data.error ? data.error : "友達一覧の取得に失敗しました", true);
         return;
       }
-      friends = data && data.friends ? data.friends : [];
+      friends = sortChatsByLastMessageTime(data && data.friends ? data.friends : []);
       // キャッシュに登録
       for (var i = 0; i < friends.length; i += 1) {
         if (friends[i] && friends[i].mid) {
           contactCache[String(friends[i].mid)] = { mid: friends[i].mid, name: friends[i].name || friends[i].mid };
         }
       }
-      renderFriendList(friends);
+      renderFriendList(getFilteredFriends());
     });
   }
 
@@ -299,13 +300,7 @@
   }
 
   function onFriendSearch() {
-    var q = trim(friendSearch.value).toLowerCase();
-    var filtered = [];
-    for (var i = 0; i < friends.length; i += 1) {
-      var n = friends[i] && friends[i].name ? String(friends[i].name).toLowerCase() : "";
-      if (!q || n.indexOf(q) !== -1) filtered.push(friends[i]);
-    }
-    renderFriendList(filtered);
+    renderFriendList(getFilteredFriends());
   }
 
   // --- Groups ---
@@ -317,8 +312,8 @@
         setListMessage(groupList, data && data.error ? data.error : "グループ一覧の取得に失敗しました", true);
         return;
       }
-      groups = data && data.groups ? data.groups : [];
-      renderGroupList(groups);
+      groups = sortChatsByLastMessageTime(data && data.groups ? data.groups : []);
+      renderGroupList(getFilteredGroups());
     });
   }
 
@@ -365,13 +360,82 @@
   }
 
   function onGroupSearch() {
+    renderGroupList(getFilteredGroups());
+  }
+
+  function getFilteredFriends() {
+    var q = trim(friendSearch.value).toLowerCase();
+    var filtered = [];
+    for (var i = 0; i < friends.length; i += 1) {
+      var n = friends[i] && friends[i].name ? String(friends[i].name).toLowerCase() : "";
+      if (!q || n.indexOf(q) !== -1) filtered.push(friends[i]);
+    }
+    return filtered;
+  }
+
+  function getFilteredGroups() {
     var q = trim(groupSearch.value).toLowerCase();
     var filtered = [];
     for (var i = 0; i < groups.length; i += 1) {
       var n = groups[i] && groups[i].name ? String(groups[i].name).toLowerCase() : "";
       if (!q || n.indexOf(q) !== -1) filtered.push(groups[i]);
     }
-    renderGroupList(filtered);
+    return filtered;
+  }
+
+  function toTimestampMs(value) {
+    var parsed = Number(value);
+    if (!isFinite(parsed) || parsed < 0) return 0;
+    return parsed;
+  }
+
+  function sortChatsByLastMessageTime(list) {
+    var sorted = (list || []).slice(0);
+    sorted.sort(function (a, b) {
+      var timeDiff = toTimestampMs(b && b.lastMessageTime) - toTimestampMs(a && a.lastMessageTime);
+      if (timeDiff !== 0) return timeDiff;
+      var nameA = a && a.name ? String(a.name) : "";
+      var nameB = b && b.name ? String(b.name) : "";
+      return nameA.localeCompare(nameB, "ja");
+    });
+    return sorted;
+  }
+
+  function updateListLastMessageTime(list, mid, timestamp) {
+    for (var i = 0; i < list.length; i += 1) {
+      if (!list[i] || String(list[i].mid) !== mid) continue;
+      var currentTime = toTimestampMs(list[i].lastMessageTime);
+      if (timestamp > currentTime) {
+        list[i].lastMessageTime = timestamp;
+        return true;
+      }
+      return false;
+    }
+    return false;
+  }
+
+  function updateChatLastMessageTime(mid, createdTime) {
+    var chatMid = mid ? String(mid) : "";
+    if (!chatMid) return;
+
+    var timestamp = toTimestampMs(createdTime);
+    if (!timestamp) timestamp = (new Date()).getTime();
+
+    var friendChanged = updateListLastMessageTime(friends, chatMid, timestamp);
+    var groupChanged = updateListLastMessageTime(groups, chatMid, timestamp);
+    if (!friendChanged && !groupChanged) return;
+
+    if (friendChanged) {
+      friends = sortChatsByLastMessageTime(friends);
+      renderFriendList(getFilteredFriends());
+    }
+    if (groupChanged) {
+      groups = sortChatsByLastMessageTime(groups);
+      renderGroupList(getFilteredGroups());
+    }
+    if (selectedChat && selectedChat.mid) {
+      highlightActiveItem(String(selectedChat.mid));
+    }
   }
 
   // --- Chat ---
@@ -522,6 +586,7 @@
 
       if (!messageCache[toMid]) messageCache[toMid] = [];
       messageCache[toMid].push(msg);
+      updateChatLastMessageTime(toMid, now);
 
       if (selectedChat && String(selectedChat.mid) === toMid) {
         appendMessageEl(msg, selectedChat.isGroup);
