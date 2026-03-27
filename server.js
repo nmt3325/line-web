@@ -313,26 +313,31 @@ app.post(
       const { mid } = req.params;
       const mimeType = (req.headers["content-type"] || "image/jpeg").split(";")[0].trim();
       const blob = new Blob([req.body], { type: mimeType });
+      let sentMessage = null;
 
       if (mid.startsWith("u")) {
         // 1対1チャット: E2EE
-        await lineClient.base.obs.uploadMediaByE2EE({
+        sentMessage = await lineClient.base.obs.uploadMediaByE2EE({
           data: blob,
           to: mid,
           oType: "image",
           filename: "image.jpg",
         });
+        cacheRawMessage(sentMessage);
       } else {
         // グループチャット: 非E2EE
         const { objId } = await lineClient.base.obs.uploadObjTalk(mid, "image", blob);
-        await lineClient.base.talk.sendMessage({
+        sentMessage = await lineClient.base.talk.sendMessage({
           to: mid,
           contentType: 1,
           contentMetadata: { OID: objId },
         });
       }
 
-      res.json({ success: true });
+      res.json({
+        success: true,
+        message: sentMessage ? formatMessage(sentMessage) : null,
+      });
     } catch (e) {
       res.status(500).json({ error: e.message });
     }

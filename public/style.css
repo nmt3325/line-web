@@ -1,8 +1,5 @@
-:root {
-  --safe-top: env(safe-area-inset-top, 0px);
-  --safe-right: env(safe-area-inset-right, 0px);
-  --safe-bottom: env(safe-area-inset-bottom, 0px);
-  --safe-left: env(safe-area-inset-left, 0px);
+html {
+  background: #06c755;
 }
 
 html,
@@ -46,7 +43,7 @@ body {
   background: #e8f5ec;
   overflow: auto;
   -webkit-overflow-scrolling: touch;
-  padding: calc(var(--safe-top) + 14px) max(12px, var(--safe-right)) calc(var(--safe-bottom) + 14px) max(12px, var(--safe-left));
+  padding: 34px 12px 14px 12px;
 }
 
 .login-card {
@@ -185,7 +182,6 @@ body {
 /* Chat layout */
 #chat-screen {
   background: #ddd3c9;
-  padding: var(--safe-top) var(--safe-right) var(--safe-bottom) var(--safe-left);
 }
 
 #sidebar {
@@ -199,12 +195,12 @@ body {
 }
 
 .sidebar-header {
-  height: 46px;
+  height: 66px;
+  padding: 20px 10px 0;
   line-height: 46px;
   background: #06c755;
   color: #fff;
   font-weight: bold;
-  padding: 0 10px;
 }
 
 .sidebar-header span {
@@ -266,7 +262,7 @@ body.standalone-mode #fullscreen-btn {
 .sidebar-tab-content {
   display: none;
   position: absolute;
-  top: 84px;
+  top: 104px;
   right: 0;
   bottom: 0;
   left: 0;
@@ -392,10 +388,10 @@ body.standalone-mode #fullscreen-btn {
   top: 0;
   right: 0;
   left: 0;
-  height: 54px;
+  height: 74px;
   border-bottom: 1px solid #d9d9d9;
   background: #fff;
-  padding: 8px 10px;
+  padding: 28px 10px 8px;
 }
 
 #back-to-friends {
@@ -435,7 +431,7 @@ body.standalone-mode #fullscreen-btn {
 
 #messages-container {
   position: absolute;
-  top: 54px;
+  top: 74px;
   right: 0;
   bottom: 64px;
   left: 0;
@@ -505,6 +501,8 @@ body.standalone-mode #fullscreen-btn {
 }
 
 .btn-img-attach {
+  -webkit-appearance: none;
+  appearance: none;
   position: absolute;
   left: 8px;
   top: 50%;
@@ -516,6 +514,7 @@ body.standalone-mode #fullscreen-btn {
   border-radius: 4px;
   background: #f5f5f5;
   color: #666;
+  padding: 0;
   cursor: pointer;
   display: -webkit-box;
   display: -ms-flexbox;
@@ -530,6 +529,11 @@ body.standalone-mode #fullscreen-btn {
 
 .btn-img-attach:hover {
   background: #eaeaea;
+}
+
+.btn-img-attach:focus-visible {
+  outline: 2px solid #06c755;
+  outline-offset: 1px;
 }
 
 #message-input {

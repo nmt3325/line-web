@@ -40,6 +40,7 @@
   var sendForm = document.getElementById("send-form");
   var messageInput = document.getElementById("message-input");
   var sendBtn = document.getElementById("send-btn");
+  var imageAttachBtn = document.getElementById("image-attach-btn");
   var imageInput = document.getElementById("image-input");
 
   setupAppFrame();
@@ -128,6 +129,11 @@
     messageInput.oninput = adjustTextarea;
     messageInput.onkeyup = adjustTextarea;
     messageInput.onkeydown = onMessageKeyDown;
+    if (imageAttachBtn) {
+      imageAttachBtn.onclick = onImageAttachClick;
+      imageAttachBtn.onkeydown = onComposeControlKeyDown;
+    }
+    sendBtn.onkeydown = onComposeControlKeyDown;
     imageInput.onchange = onImageSelected;
   }
 
@@ -587,11 +593,17 @@
     sendImageFile(file);
   }
 
+  function onImageAttachClick() {
+    if (!imageInput || !selectedChat || !selectedChat.mid) return;
+    imageInput.click();
+  }
+
   function sendImageFile(file) {
     if (!selectedChat || !selectedChat.mid) return;
     var toMid = String(selectedChat.mid);
 
     sendBtn.disabled = true;
+    if (imageAttachBtn) imageAttachBtn.disabled = true;
 
     var xhr = new XMLHttpRequest();
     xhr.open("POST", "/api/chat/" + encodeURIComponent(toMid) + "/send-image", true);
@@ -599,25 +611,31 @@
     xhr.onreadystatechange = function () {
       if (xhr.readyState !== 4) return;
       sendBtn.disabled = false;
+      if (imageAttachBtn) imageAttachBtn.disabled = false;
+
+      var data = null;
+      try { data = JSON.parse(xhr.responseText); } catch (ignore) {}
+
       if (xhr.status < 200 || xhr.status >= 300) {
-        var data = null;
-        try { data = JSON.parse(xhr.responseText); } catch (ignore) {}
         window.alert("画像の送信に失敗しました: " + (data && data.error ? data.error : xhr.status));
         return;
       }
 
-      // 送信済み画像をUIに即時表示（IDは仮）
+      // 送信済み画像をUIに即時表示（サーバー返却の実メッセージIDを優先）
       var now = (new Date()).getTime();
+      var serverMessage = data && data.message ? data.message : null;
+      var createdTime = toTimestampMs(serverMessage && serverMessage.createdTime);
+      if (!createdTime) createdTime = now;
       var msg = {
-        id: String(now),
-        from: myMid ? myMid : "__me__",
-        to: toMid,
+        id: serverMessage && serverMessage.id ? String(serverMessage.id) : String(now),
+        from: serverMessage && serverMessage.from ? String(serverMessage.from) : (myMid ? myMid : "__me__"),
+        to: serverMessage && serverMessage.to ? String(serverMessage.to) : toMid,
         text: "",
-        contentType: 1,
-        createdTime: now
+        contentType: serverMessage && serverMessage.contentType ? serverMessage.contentType : 1,
+        createdTime: createdTime
       };
       cacheMessage(toMid, msg);
-      updateChatLastMessageTime(toMid, now);
+      updateChatLastMessageTime(toMid, createdTime);
       if (selectedChat && String(selectedChat.mid) === toMid) {
         renderMessages(toMid);
       }
@@ -638,7 +656,63 @@
       sendCurrentMessage();
       return false;
     }
-    return true;
+    return onComposeControlKeyDown(e);
+  }
+
+  function onComposeControlKeyDown(e) {
+    var keyCode = e && (e.keyCode || e.which);
+    if (keyCode !== 37 && keyCode !== 38 && keyCode !== 39 && keyCode !== 40) {
+      return true;
+    }
+
+    var controls = [];
+    if (imageAttachBtn) controls.push(imageAttachBtn);
+    controls.push(messageInput);
+    controls.push(sendBtn);
+
+    var target = e && e.target ? e.target : null;
+    var currentIndex = controls.indexOf(target);
+    if (currentIndex === -1) return true;
+
+    // テキスト入力中は通常のカーソル移動を優先し、端まで移動したときだけフォーカス移動する
+    if (target === messageInput) {
+      var selectionStart = typeof messageInput.selectionStart === "number" ? messageInput.selectionStart : 0;
+      var selectionEnd = typeof messageInput.selectionEnd === "number" ? messageInput.selectionEnd : 0;
+      var valueLength = (messageInput.value || "").length;
+      var isAtStart = selectionStart === 0 && selectionEnd === 0;
+      var isAtEnd = selectionStart === valueLength && selectionEnd === valueLength;
+
+      if ((keyCode === 37 || keyCode === 38) && !isAtStart) return true;
+      if ((keyCode === 39 || keyCode === 40) && !isAtEnd) return true;
+    }
+
+    var nextIndex = currentIndex;
+    if (keyCode === 37 || keyCode === 38) {
+      nextIndex = Math.max(0, currentIndex - 1);
+    } else {
+      nextIndex = Math.min(controls.length - 1, currentIndex + 1);
+    }
+    if (nextIndex === currentIndex) return true;
+
+    var nextEl = controls[nextIndex];
+    if (!nextEl || nextEl.disabled) return true;
+    if (e.preventDefault) e.preventDefault();
+    nextEl.focus();
+    if (nextEl === messageInput) {
+      var messageLength = (messageInput.value || "").length;
+      var cursorPos;
+      if (target === sendBtn) {
+        cursorPos = messageLength;
+      } else if (imageAttachBtn && target === imageAttachBtn) {
+        cursorPos = 0;
+      } else {
+        cursorPos = (keyCode === 37 || keyCode === 38) ? 0 : messageLength;
+      }
+      if (messageInput.setSelectionRange) {
+        messageInput.setSelectionRange(cursorPos, cursorPos);
+      }
+    }
+    return false;
   }
 
   function sendCurrentMessage() {
@@ -649,6 +723,7 @@
 
     var toMid = String(selectedChat.mid);
     sendBtn.disabled = true;
+    if (imageAttachBtn) imageAttachBtn.disabled = true;
     messageInput.disabled = true;
 
     apiRequest("POST", "/api/chat/" + encodeURIComponent(toMid) + "/send", { text: text }, function (status, data) {
@@ -656,6 +731,7 @@
         var errorMessage = data && data.error ? data.error : "送信に失敗しました";
         window.alert("送信に失敗しました: " + errorMessage);
         sendBtn.disabled = false;
+        if (imageAttachBtn) imageAttachBtn.disabled = false;
         messageInput.disabled = false;
         messageInput.focus();
         return;
@@ -680,6 +756,7 @@
       messageInput.value = "";
       adjustTextarea();
       sendBtn.disabled = false;
+      if (imageAttachBtn) imageAttachBtn.disabled = false;
       messageInput.disabled = false;
       messageInput.focus();
     });
