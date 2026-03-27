@@ -1,0 +1,16 @@
+{
+  "name": "line-web-chat",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "@evex/linejs": "npm:@jsr/evex__linejs@^2.3.7",
+    "express": "^4.19.2",
+    "qrcode": "^1.5.4",
+    "socket.io": "^4.7.5",
+    "undici": "^7.24.6"
+  }
+}

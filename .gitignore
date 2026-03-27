@@ -1,1 +1,8 @@
 /linejs
+.env
+node_modules/
+package-lock.json
+*.log
+line-storage.json
+debug.js
+.npmrc

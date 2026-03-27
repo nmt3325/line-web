@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LINE Web Chat</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div id="login-screen" class="screen">
+  <div class="login-card">
+    <h1>LINE Web Chat</h1>
+
+    <div class="tab-bar">
+      <button type="button" class="tab active" data-tab="password">メール</button>
+      <button type="button" class="tab" data-tab="qr">QRコード</button>
+    </div>
+
+    <div id="tab-password" class="tab-content active">
+      <form id="password-form">
+        <label>メールアドレス
+          <input type="text" id="email" placeholder="example@line.me" required>
+        </label>
+        <label>パスワード
+          <input type="password" id="password" placeholder="パスワード" required>
+        </label>
+        <button type="submit" class="btn-primary" id="login-btn">ログイン</button>
+      </form>
+    </div>
+
+    <div id="tab-qr" class="tab-content">
+      <p class="hint">LINEアプリでQRコードを読み取ってください</p>
+      <div id="qr-container">
+        <button type="button" class="btn-primary" id="qr-start-btn">QRコードを表示</button>
+      </div>
+    </div>
+
+    <div id="pincode-box" class="hidden">
+      <p class="hint">LINEアプリに以下のPINコードを入力してください</p>
+      <div id="pincode-display" class="pincode"></div>
+    </div>
+
+    <div id="login-status" class="status-msg"></div>
+  </div>
+</div>
+
+<div id="chat-screen" class="screen hidden">
+  <div id="sidebar">
+    <div class="sidebar-header">
+      <span>LINE Web Chat</span>
+      <button type="button" id="logout-btn">ログアウト</button>
+    </div>
+    <div class="sidebar-tab-bar">
+      <button type="button" class="sidebar-tab active" data-sidebar-tab="friends">友達</button>
+      <button type="button" class="sidebar-tab" data-sidebar-tab="groups">グループ</button>
+    </div>
+    <div id="sidebar-friends" class="sidebar-tab-content active">
+      <div id="friend-search-wrap">
+        <input type="text" id="friend-search" placeholder="友達を検索">
+      </div>
+      <ul id="friend-list"></ul>
+    </div>
+    <div id="sidebar-groups" class="sidebar-tab-content">
+      <div id="group-search-wrap">
+        <input type="text" id="group-search" placeholder="グループを検索">
+      </div>
+      <ul id="group-list"></ul>
+    </div>
+  </div>
+
+  <div id="chat-area">
+    <div id="chat-placeholder">
+      <p>友達を選択してチャットを開始</p>
+    </div>
+
+    <div id="chat-panel" class="hidden">
+      <div id="chat-header">
+        <button type="button" id="back-to-friends">戻る</button>
+        <img id="chat-avatar" src="" alt="">
+        <span id="chat-name"></span>
+      </div>
+      <div id="messages-container">
+        <ul id="message-list"></ul>
+      </div>
+      <form id="send-form">
+        <textarea id="message-input" placeholder="メッセージを入力" rows="2"></textarea>
+        <button type="submit" class="btn-send" id="send-btn">送信</button>
+      </form>
+    </div>
+  </div>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
