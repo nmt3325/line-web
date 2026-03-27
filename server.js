@@ -114,7 +114,16 @@ app.get("/api/auth/status", async (_req, res) => {
 // Logout
 app.post("/api/auth/logout", async (_req, res) => {
   try {
-    lineClient = null;
+    if (lineClient) {
+      // Abort active push (HTTP/2) connections and stop the polling loop
+      for (const conn of lineClient.base.push.conns ?? []) {
+        try { conn.reqStream?.abort?.abort(); } catch {}
+      }
+      lineClient.base.authToken = undefined;
+      lineClient = null;
+    }
+    // Reset the global HTTP/2 agent so the next login gets fresh connections
+    setGlobalDispatcher(new Agent({ allowH2: true }));
     await writeFile("./line-storage.json", "{}");
     storage = new FileStorage("./line-storage.json");
     res.json({ success: true });

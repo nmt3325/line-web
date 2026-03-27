@@ -595,6 +595,16 @@
 
   function onImageAttachClick() {
     if (!imageInput || !selectedChat || !selectedChat.mid) return;
+    if (imageAttachBtn && imageAttachBtn.disabled) return;
+
+    if (typeof imageInput.showPicker === "function") {
+      try {
+        imageInput.showPicker();
+        return;
+      } catch (ignore) {
+        // Fallback to click() for browsers that reject showPicker()
+      }
+    }
     imageInput.click();
   }
 

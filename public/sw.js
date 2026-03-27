@@ -1,4 +1,4 @@
-const STATIC_CACHE = "line-web-static-v3";
+const STATIC_CACHE = "line-web-static-v4";
 const APP_SHELL = [
   "/",
   "/index.html",
@@ -15,6 +15,13 @@ const APP_SHELL = [
   "/icons/apple-startup-640x920.png",
   "/icons/apple-startup-640x1096.png",
 ];
+const NETWORK_FIRST_PATHS = new Set([
+  "/",
+  "/index.html",
+  "/style.css",
+  "/app.js",
+  "/manifest.webmanifest",
+]);
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -44,9 +51,19 @@ self.addEventListener("fetch", (event) => {
   if (url.origin !== self.location.origin) return;
   if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/socket.io/")) return;
 
-  if (request.mode === "navigate") {
+  if (request.mode === "navigate" || NETWORK_FIRST_PATHS.has(url.pathname)) {
     event.respondWith(
-      fetch(request).catch(() => caches.match("/index.html")),
+      fetch(request)
+        .then((response) => {
+          if (response && response.status === 200 && response.type === "basic") {
+            const copy = response.clone();
+            caches.open(STATIC_CACHE).then((cache) => {
+              cache.put(request, copy);
+            });
+          }
+          return response;
+        })
+        .catch(() => caches.match(request).then((cached) => cached || caches.match("/index.html"))),
     );
     return;
   }
