@@ -29,6 +29,7 @@
   var groupList = document.getElementById("group-list");
   var groupSearch = document.getElementById("group-search");
   var logoutBtn = document.getElementById("logout-btn");
+  var fullscreenBtn = document.getElementById("fullscreen-btn");
 
   var chatPlaceholder = document.getElementById("chat-placeholder");
   var chatPanel = document.getElementById("chat-panel");
@@ -39,12 +40,15 @@
   var sendForm = document.getElementById("send-form");
   var messageInput = document.getElementById("message-input");
   var sendBtn = document.getElementById("send-btn");
+  var imageInput = document.getElementById("image-input");
 
+  setupAppFrame();
   setupLoginTabs();
   setupSidebarTabs();
   bindEvents();
   socket.emit("auth:auto");
   bindSocketEvents();
+  registerServiceWorker();
 
   function setupLoginTabs() {
     var tabs = document.querySelectorAll(".tab");
@@ -114,6 +118,7 @@
     passwordForm.onsubmit = onPasswordSubmit;
     qrStartBtn.onclick = onQrStart;
     logoutBtn.onclick = onLogout;
+    if (fullscreenBtn) fullscreenBtn.onclick = onToggleFullscreen;
     backToFriendsBtn.onclick = onBackToFriends;
     friendSearch.onkeyup = onFriendSearch;
     friendSearch.oninput = onFriendSearch;
@@ -123,6 +128,7 @@
     messageInput.oninput = adjustTextarea;
     messageInput.onkeyup = adjustTextarea;
     messageInput.onkeydown = onMessageKeyDown;
+    imageInput.onchange = onImageSelected;
   }
 
   function bindSocketEvents() {
@@ -186,15 +192,11 @@
 
       if (!chatMid) return;
 
-      if (!messageCache[chatMid]) {
-        messageCache[chatMid] = [];
-      }
-      messageCache[chatMid].push(msg);
+      cacheMessage(chatMid, msg);
       updateChatLastMessageTime(chatMid, msg.createdTime);
 
       if (selectedChat && String(selectedChat.mid) === chatMid) {
-        appendMessageEl(msg, selectedChat.isGroup);
-        scrollToBottom();
+        renderMessages(chatMid);
       }
     });
   }
@@ -401,6 +403,26 @@
     return sorted;
   }
 
+  function sortMessagesByCreatedTime(list) {
+    var sorted = (list || []).slice(0);
+    sorted.sort(function (a, b) {
+      var timeDiff = toTimestampMs(a && a.createdTime) - toTimestampMs(b && b.createdTime);
+      if (timeDiff !== 0) return timeDiff;
+      var idA = a && a.id ? String(a.id) : "";
+      var idB = b && b.id ? String(b.id) : "";
+      return idA.localeCompare(idB);
+    });
+    return sorted;
+  }
+
+  function cacheMessage(chatMid, msg) {
+    if (!messageCache[chatMid]) {
+      messageCache[chatMid] = [];
+    }
+    messageCache[chatMid].push(msg);
+    messageCache[chatMid] = sortMessagesByCreatedTime(messageCache[chatMid]);
+  }
+
   function updateListLastMessageTime(list, mid, timestamp) {
     for (var i = 0; i < list.length; i += 1) {
       if (!list[i] || String(list[i].mid) !== mid) continue;
@@ -479,14 +501,15 @@
         setMessageListMessage(data && data.error ? data.error : "メッセージ取得に失敗しました", true);
         return;
       }
-      messageCache[mid] = data && data.messages ? data.messages : [];
+      messageCache[mid] = sortMessagesByCreatedTime(data && data.messages ? data.messages : []);
       renderMessages(mid);
     });
   }
 
   function renderMessages(mid) {
-    var messages = messageCache[mid] || [];
+    var messages = sortMessagesByCreatedTime(messageCache[mid] || []);
     var isGroup = selectedChat && selectedChat.isGroup;
+    messageCache[mid] = messages;
 
     clearNode(messageListEl);
 
@@ -510,15 +533,21 @@
     return String(fromMid).slice(0, 8) + "...";
   }
 
+  function isImageMessage(msg) {
+    var ct = msg && msg.contentType;
+    return ct === 1 || ct === "IMAGE" || ct === "1";
+  }
+
   function appendMessageEl(msg, isGroup) {
     var li = document.createElement("li");
     var bubble = document.createElement("div");
     var time = document.createElement("div");
     var fromValue = msg && msg.from ? String(msg.from) : "";
     var isOut = myMid && fromValue && fromValue === String(myMid);
+    var msgId = msg && msg.id ? String(msg.id) : "";
 
     li.className = "msg " + (isOut ? "outgoing" : "incoming");
-    li.setAttribute("data-id", msg && msg.id ? String(msg.id) : "");
+    li.setAttribute("data-id", msgId);
 
     // グループチャットで受信メッセージの場合、送信者名を表示
     if (isGroup && !isOut && fromValue) {
@@ -528,8 +557,20 @@
       li.appendChild(sender);
     }
 
-    bubble.className = "msg-bubble";
-    bubble.textContent = msg && msg.text ? String(msg.text) : "[メディア]";
+    if (isImageMessage(msg) && msgId) {
+      bubble.className = "msg-bubble is-image";
+      var imgEl = document.createElement("img");
+      imgEl.className = "msg-image";
+      imgEl.src = "/api/message/" + encodeURIComponent(msgId) + "/image?preview=1";
+      imgEl.alt = "画像";
+      imgEl.onclick = function () {
+        window.open("/api/message/" + encodeURIComponent(msgId) + "/image", "_blank");
+      };
+      bubble.appendChild(imgEl);
+    } else {
+      bubble.className = "msg-bubble";
+      bubble.textContent = msg && msg.text ? String(msg.text) : "[メディア]";
+    }
 
     time.className = "msg-time";
     time.textContent = formatTime(msg && msg.createdTime ? msg.createdTime : null);
@@ -537,6 +578,51 @@
     li.appendChild(bubble);
     li.appendChild(time);
     messageListEl.appendChild(li);
+  }
+
+  function onImageSelected() {
+    if (!imageInput.files || !imageInput.files[0]) return;
+    var file = imageInput.files[0];
+    imageInput.value = "";
+    sendImageFile(file);
+  }
+
+  function sendImageFile(file) {
+    if (!selectedChat || !selectedChat.mid) return;
+    var toMid = String(selectedChat.mid);
+
+    sendBtn.disabled = true;
+
+    var xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/chat/" + encodeURIComponent(toMid) + "/send-image", true);
+    xhr.setRequestHeader("Content-Type", file.type || "image/jpeg");
+    xhr.onreadystatechange = function () {
+      if (xhr.readyState !== 4) return;
+      sendBtn.disabled = false;
+      if (xhr.status < 200 || xhr.status >= 300) {
+        var data = null;
+        try { data = JSON.parse(xhr.responseText); } catch (ignore) {}
+        window.alert("画像の送信に失敗しました: " + (data && data.error ? data.error : xhr.status));
+        return;
+      }
+
+      // 送信済み画像をUIに即時表示（IDは仮）
+      var now = (new Date()).getTime();
+      var msg = {
+        id: String(now),
+        from: myMid ? myMid : "__me__",
+        to: toMid,
+        text: "",
+        contentType: 1,
+        createdTime: now
+      };
+      cacheMessage(toMid, msg);
+      updateChatLastMessageTime(toMid, now);
+      if (selectedChat && String(selectedChat.mid) === toMid) {
+        renderMessages(toMid);
+      }
+    };
+    xhr.send(file);
   }
 
   function onSendSubmit(e) {
@@ -584,13 +670,11 @@
         createdTime: now
       };
 
-      if (!messageCache[toMid]) messageCache[toMid] = [];
-      messageCache[toMid].push(msg);
+      cacheMessage(toMid, msg);
       updateChatLastMessageTime(toMid, now);
 
       if (selectedChat && String(selectedChat.mid) === toMid) {
-        appendMessageEl(msg, selectedChat.isGroup);
-        scrollToBottom();
+        renderMessages(toMid);
       }
 
       messageInput.value = "";
@@ -602,6 +686,95 @@
   }
 
   // --- UI helpers ---
+
+  function setupAppFrame() {
+    syncDisplayMode();
+    syncFullscreenButton();
+
+    if (window.matchMedia) {
+      var media = window.matchMedia("(display-mode: standalone)");
+      if (media.addEventListener) {
+        media.addEventListener("change", onDisplayModeChange);
+      } else if (media.addListener) {
+        media.addListener(onDisplayModeChange);
+      }
+    }
+
+    document.addEventListener("fullscreenchange", syncFullscreenButton);
+    document.addEventListener("webkitfullscreenchange", syncFullscreenButton);
+  }
+
+  function onDisplayModeChange() {
+    syncDisplayMode();
+    syncFullscreenButton();
+  }
+
+  function isStandaloneMode() {
+    var mediaStandalone = window.matchMedia && window.matchMedia("(display-mode: standalone)").matches;
+    return !!(mediaStandalone || window.navigator.standalone === true);
+  }
+
+  function syncDisplayMode() {
+    if (isStandaloneMode()) {
+      addClass(document.body, "standalone-mode");
+    } else {
+      removeClass(document.body, "standalone-mode");
+    }
+  }
+
+  function supportsFullscreen() {
+    var root = document.documentElement;
+    return !!(
+      root.requestFullscreen ||
+      root.webkitRequestFullscreen ||
+      document.fullscreenEnabled ||
+      document.webkitFullscreenEnabled
+    );
+  }
+
+  function isFullscreen() {
+    return !!(document.fullscreenElement || document.webkitFullscreenElement);
+  }
+
+  function syncFullscreenButton() {
+    if (!fullscreenBtn) return;
+
+    if (!supportsFullscreen() || isStandaloneMode()) {
+      addClass(fullscreenBtn, "hidden");
+      return;
+    }
+
+    removeClass(fullscreenBtn, "hidden");
+    fullscreenBtn.textContent = isFullscreen() ? "全画面終了" : "全画面";
+  }
+
+  function onToggleFullscreen() {
+    if (isFullscreen()) {
+      if (document.exitFullscreen) {
+        document.exitFullscreen();
+      } else if (document.webkitExitFullscreen) {
+        document.webkitExitFullscreen();
+      }
+      return;
+    }
+
+    var root = document.documentElement;
+    if (root.requestFullscreen) {
+      root.requestFullscreen();
+    } else if (root.webkitRequestFullscreen) {
+      root.webkitRequestFullscreen();
+    }
+  }
+
+  function registerServiceWorker() {
+    if (!("serviceWorker" in navigator)) return;
+
+    window.addEventListener("load", function () {
+      navigator.serviceWorker.register("/sw.js").catch(function (error) {
+        console.warn("[sw] registration failed:", error);
+      });
+    });
+  }
 
   function setStatus(msg, type) {
     loginStatus.textContent = msg || "";

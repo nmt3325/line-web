@@ -1,0 +1,18 @@
+{
+  "name": "LINE Web Chat",
+  "short_name": "LINE Web",
+  "description": "LINE Web Chat client",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#ddd3c9",
+  "theme_color": "#06c755",
+  "icons": [
+    {
+      "src": "/icons/app-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

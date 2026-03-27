@@ -1,9 +1,17 @@
+:root {
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+}
+
 html,
 body {
   margin: 0;
   padding: 0;
   width: 100%;
   height: 100%;
+  min-height: 100%;
 }
 
 body {
@@ -12,6 +20,8 @@ body {
   line-height: 1.4;
   color: #222;
   background: #f1f1f1;
+  overflow: hidden;
+  -webkit-text-size-adjust: 100%;
 }
 
 * {
@@ -24,7 +34,7 @@ body {
 }
 
 .screen {
-  position: absolute;
+  position: fixed;
   top: 0;
   right: 0;
   bottom: 0;
@@ -35,12 +45,13 @@ body {
 #login-screen {
   background: #e8f5ec;
   overflow: auto;
+  padding: calc(var(--safe-top) + 14px) max(12px, var(--safe-right)) calc(var(--safe-bottom) + 14px) max(12px, var(--safe-left));
 }
 
 .login-card {
   width: 92%;
   max-width: 360px;
-  margin: 30px auto;
+  margin: 16px auto;
   background: #fff;
   border: 1px solid #d6e8db;
   border-radius: 8px;
@@ -173,6 +184,7 @@ body {
 /* Chat layout */
 #chat-screen {
   background: #ddd3c9;
+  padding: var(--safe-top) var(--safe-right) var(--safe-bottom) var(--safe-left);
 }
 
 #sidebar {
@@ -208,6 +220,23 @@ body {
   font-size: 12px;
   padding: 4px 8px;
   cursor: pointer;
+}
+
+#fullscreen-btn {
+  float: right;
+  margin-top: 8px;
+  margin-right: 6px;
+  border: 1px solid #ffffff;
+  border-radius: 3px;
+  background: #06c755;
+  color: #fff;
+  font-size: 12px;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+
+body.standalone-mode #fullscreen-btn {
+  display: none;
 }
 
 .sidebar-tab-bar {
@@ -472,12 +501,40 @@ body {
   background: #fff;
 }
 
+.btn-img-attach {
+  position: absolute;
+  left: 8px;
+  top: 50%;
+  -webkit-transform: translateY(-50%);
+  transform: translateY(-50%);
+  width: 40px;
+  height: 40px;
+  border: 1px solid #d0d0d0;
+  border-radius: 4px;
+  background: #f5f5f5;
+  color: #666;
+  cursor: pointer;
+  display: -webkit-box;
+  display: -ms-flexbox;
+  display: flex;
+  -webkit-box-align: center;
+  -ms-flex-align: center;
+  align-items: center;
+  -webkit-box-pack: center;
+  -ms-flex-pack: center;
+  justify-content: center;
+}
+
+.btn-img-attach:hover {
+  background: #eaeaea;
+}
+
 #message-input {
   position: absolute;
   top: 8px;
   right: 78px;
   bottom: 8px;
-  left: 8px;
+  left: 56px;
   border: 1px solid #d0d0d0;
   border-radius: 4px;
   padding: 8px;
@@ -503,6 +560,23 @@ body {
 .btn-send:disabled {
   opacity: 0.6;
   cursor: default;
+}
+
+.msg-image {
+  display: block;
+  max-width: 220px;
+  max-height: 220px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.msg-bubble.is-image {
+  padding: 3px;
+  background: transparent;
+}
+
+.msg.outgoing .msg-bubble.is-image {
+  background: transparent;
 }
 
 .loading {

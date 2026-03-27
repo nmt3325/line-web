@@ -21,8 +21,21 @@ const io = new Server(httpServer);
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
 
-const storage = new FileStorage("./line-storage.json");
+let storage = new FileStorage("./line-storage.json");
 const LINE_PROFILE_CDN = "https://profile.line-scdn.net";
+
+// Cache raw (pre-decryption) IMAGE messages so we can download E2EE images later
+const rawMessageCache = new Map();
+const RAW_MSG_CACHE_MAX = 500;
+
+function cacheRawMessage(msg) {
+  if (!msg?.id) return;
+  const id = String(msg.id);
+  if (rawMessageCache.size >= RAW_MSG_CACHE_MAX) {
+    rawMessageCache.delete(rawMessageCache.keys().next().value);
+  }
+  rawMessageCache.set(id, msg);
+}
 
 /** @type {import("@evex/linejs").Client | null} */
 let lineClient = null;
@@ -103,6 +116,7 @@ app.post("/api/auth/logout", async (_req, res) => {
   try {
     lineClient = null;
     await writeFile("./line-storage.json", "{}");
+    storage = new FileStorage("./line-storage.json");
     res.json({ success: true });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -228,9 +242,12 @@ app.get("/api/chat/:mid/messages", async (req, res) => {
       },
     });
 
-    // E2EE メッセージを復号する
+    // E2EE メッセージを復号する（IMAGE メッセージは復号前にキャッシュ）
     const decrypted = await Promise.all(
       (raw ?? []).map(async (msg) => {
+        if (msg.contentType === 1 || msg.contentType === "IMAGE") {
+          cacheRawMessage(msg);
+        }
         if (msg.contentMetadata?.e2eeVersion) {
           try {
             return await lineClient.base.e2ee.decryptE2EEMessage(msg);
@@ -242,12 +259,85 @@ app.get("/api/chat/:mid/messages", async (req, res) => {
       }),
     );
 
-    const messages = decrypted.map(formatMessage);
+    const messages = decrypted
+      .map(formatMessage)
+      .sort((a, b) => toEpochMs(a.createdTime) - toEpochMs(b.createdTime));
     res.json({ messages });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
+
+// Download image
+app.get("/api/message/:messageId/image", async (req, res) => {
+  try {
+    assertClient();
+    const { messageId } = req.params;
+    const isPreview = req.query.preview === "1";
+
+    const rawMsg = rawMessageCache.get(messageId);
+    let file = null;
+
+    // E2EE image: raw message has chunks
+    if (rawMsg?.chunks?.length) {
+      try {
+        file = await lineClient.base.obs.downloadMediaByE2EE(rawMsg);
+      } catch (e) {
+        console.error("[image] E2EE download failed:", e.message);
+      }
+    }
+
+    // Non-E2EE fallback
+    if (!file) {
+      file = await lineClient.base.obs.downloadMessageData({ messageId, isPreview });
+    }
+
+    if (!file) return res.status(404).json({ error: "Image not found" });
+
+    const arrayBuffer = await file.arrayBuffer();
+    res.set("Content-Type", file.type || "image/jpeg");
+    res.set("Cache-Control", "public, max-age=3600");
+    res.send(Buffer.from(arrayBuffer));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Send image
+app.post(
+  "/api/chat/:mid/send-image",
+  express.raw({ type: "*/*", limit: "10mb" }),
+  async (req, res) => {
+    try {
+      assertClient();
+      const { mid } = req.params;
+      const mimeType = (req.headers["content-type"] || "image/jpeg").split(";")[0].trim();
+      const blob = new Blob([req.body], { type: mimeType });
+
+      if (mid.startsWith("u")) {
+        // 1対1チャット: E2EE
+        await lineClient.base.obs.uploadMediaByE2EE({
+          data: blob,
+          to: mid,
+          oType: "image",
+          filename: "image.jpg",
+        });
+      } else {
+        // グループチャット: 非E2EE
+        const { objId } = await lineClient.base.obs.uploadObjTalk(mid, "image", blob);
+        await lineClient.base.talk.sendMessage({
+          to: mid,
+          contentType: 1,
+          contentMetadata: { OID: objId },
+        });
+      }
+
+      res.json({ success: true });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  },
+);
 
 // Send message
 app.post("/api/chat/:mid/send", async (req, res) => {
@@ -280,6 +370,10 @@ async function listenWithRestart() {
       for await (const event of polling.listenTalkEvents()) {
         if (event.type === "SEND_MESSAGE" || event.type === "RECEIVE_MESSAGE") {
           let msg = event.message;
+          // IMAGE メッセージは復号前にキャッシュ（E2EE画像ダウンロード用）
+          if (msg.contentType === 1 || msg.contentType === "IMAGE") {
+            cacheRawMessage(msg);
+          }
           try {
             msg = await lineClient.base.e2ee.decryptE2EEMessage(msg);
           } catch (e) {
