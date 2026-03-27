@@ -1,4 +1,4 @@
-const STATIC_CACHE = "line-web-static-v2";
+const STATIC_CACHE = "line-web-static-v3";
 const APP_SHELL = [
   "/",
   "/index.html",
@@ -6,6 +6,14 @@ const APP_SHELL = [
   "/app.js",
   "/manifest.webmanifest",
   "/icons/app-icon.svg",
+  "/icons/app-icon-180.png",
+  "/icons/app-icon-192.png",
+  "/icons/app-icon-512.png",
+  "/icons/apple-touch-icon-114.png",
+  "/icons/apple-touch-icon-57.png",
+  "/icons/apple-startup-320x460.png",
+  "/icons/apple-startup-640x920.png",
+  "/icons/apple-startup-640x1096.png",
 ];
 
 self.addEventListener("install", (event) => {
