@@ -364,7 +364,6 @@ app.post("/api/chat/:mid/send", async (req, res) => {
     await lineClient.base.talk.sendMessage({
       to: mid,
       text: text.trim(),
-      e2ee: true,
       contentType: "NONE",
       contentMetadata: {},
     });
