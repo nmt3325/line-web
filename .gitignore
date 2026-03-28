@@ -6,3 +6,4 @@ package-lock.json
 line-storage.json
 debug.js
 .npmrc
+/example

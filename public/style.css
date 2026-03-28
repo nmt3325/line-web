@@ -500,11 +500,11 @@ body.standalone-mode #fullscreen-btn {
   background: #fff;
 }
 
-.btn-img-attach {
+.btn-img-attach,
+.btn-video-attach {
   -webkit-appearance: none;
   appearance: none;
   position: absolute;
-  left: 8px;
   top: 50%;
   -webkit-transform: translateY(-50%);
   transform: translateY(-50%);
@@ -527,11 +527,24 @@ body.standalone-mode #fullscreen-btn {
   justify-content: center;
 }
 
+.btn-img-attach {
+  left: 8px;
+}
+
+.btn-video-attach {
+  left: 52px;
+}
+
 .btn-img-attach:hover {
   background: #eaeaea;
 }
 
-.btn-img-attach:focus-visible {
+.btn-video-attach:hover {
+  background: #eaeaea;
+}
+
+.btn-img-attach:focus-visible,
+.btn-video-attach:focus-visible {
   outline: 2px solid #06c755;
   outline-offset: 1px;
 }
@@ -541,7 +554,7 @@ body.standalone-mode #fullscreen-btn {
   top: 8px;
   right: 78px;
   bottom: 8px;
-  left: 56px;
+  left: 100px;
   border: 1px solid #d0d0d0;
   border-radius: 4px;
   padding: 8px;
@@ -591,8 +604,26 @@ body.standalone-mode #fullscreen-btn {
   background: transparent;
 }
 
+.msg-bubble.is-video {
+  padding: 3px;
+  background: transparent;
+}
+
 .msg.outgoing .msg-bubble.is-image {
   background: transparent;
+}
+
+.msg.outgoing .msg-bubble.is-video {
+  background: transparent;
+}
+
+.msg-video {
+  display: block;
+  width: 220px;
+  max-width: 100%;
+  max-height: 280px;
+  border-radius: 6px;
+  background: #000;
 }
 
 .loading {

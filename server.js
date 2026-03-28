@@ -24,10 +24,10 @@ app.use(express.static(path.join(__dirname, "public")));
 let storage = new SafeJsonFileStorage("./line-storage.json");
 const LINE_PROFILE_CDN = "https://profile.line-scdn.net";
 
-// Cache raw (pre-decryption) IMAGE messages so we can download E2EE images later
+// Cache raw (pre-decryption) media messages so we can download E2EE media later
 const rawMessageCache = new Map();
 const RAW_MSG_CACHE_MAX = 500;
-const IMAGE_MIME_BY_EXT = {
+const MEDIA_MIME_BY_EXT = {
   ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg",
   ".png": "image/png",
@@ -36,6 +36,14 @@ const IMAGE_MIME_BY_EXT = {
   ".bmp": "image/bmp",
   ".heic": "image/heic",
   ".heif": "image/heif",
+  ".mp4": "video/mp4",
+  ".mov": "video/quicktime",
+  ".m4v": "video/x-m4v",
+  ".webm": "video/webm",
+  ".3gp": "video/3gpp",
+  ".3g2": "video/3gpp2",
+  ".mkv": "video/x-matroska",
+  ".avi": "video/x-msvideo",
 };
 
 function cacheRawMessage(msg) {
@@ -47,9 +55,98 @@ function cacheRawMessage(msg) {
   rawMessageCache.set(id, msg);
 }
 
-function guessImageMimeType(fileName, fallback = "image/jpeg") {
+function normalizeContentType(contentType) {
+  if (typeof contentType === "number") return String(contentType);
+  if (typeof contentType === "string") return contentType.toUpperCase();
+  return "";
+}
+
+function isImageContentType(contentType) {
+  const normalized = normalizeContentType(contentType);
+  return normalized === "1" || normalized === "IMAGE";
+}
+
+function isVideoContentType(contentType) {
+  const normalized = normalizeContentType(contentType);
+  return normalized === "2" || normalized === "VIDEO";
+}
+
+function shouldCacheRawMediaMessage(msg) {
+  if (!msg || typeof msg !== "object") return false;
+  return isImageContentType(msg.contentType) || isVideoContentType(msg.contentType);
+}
+
+function guessMediaMimeType(fileName, fallback = "application/octet-stream") {
   const ext = path.extname(String(fileName || "")).toLowerCase();
-  return IMAGE_MIME_BY_EXT[ext] || fallback;
+  return MEDIA_MIME_BY_EXT[ext] || fallback;
+}
+
+function getHeaderValue(header) {
+  if (Array.isArray(header)) return header[0];
+  return header;
+}
+
+function parseVideoDurationMs(headerValue) {
+  const rawValue = getHeaderValue(headerValue);
+  const parsed = Number(rawValue);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 1919;
+  return Math.max(1, Math.round(parsed));
+}
+
+function parseByteRange(rangeHeader, totalLength) {
+  if (!rangeHeader || typeof rangeHeader !== "string") return null;
+  const match = /^bytes=(\d*)-(\d*)$/i.exec(rangeHeader.trim());
+  if (!match) return null;
+
+  const [, startRaw, endRaw] = match;
+  let start;
+  let end;
+
+  if (startRaw === "" && endRaw === "") return "invalid";
+
+  if (startRaw === "") {
+    const suffixLength = Number(endRaw);
+    if (!Number.isFinite(suffixLength) || suffixLength <= 0) return "invalid";
+    start = Math.max(totalLength - Math.floor(suffixLength), 0);
+    end = totalLength - 1;
+  } else {
+    start = Number(startRaw);
+    end = endRaw ? Number(endRaw) : totalLength - 1;
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return "invalid";
+  }
+
+  if (start < 0 || end < start || start >= totalLength) return "invalid";
+  end = Math.min(end, totalLength - 1);
+  return { start, end };
+}
+
+async function sendBlobWithRangeSupport(req, res, file, fallbackMimeType) {
+  const arrayBuffer = await file.arrayBuffer();
+  const buffer = Buffer.from(arrayBuffer);
+  const totalLength = buffer.length;
+  const contentType = file.type || fallbackMimeType;
+  const rangeInfo = parseByteRange(req.headers.range, totalLength);
+
+  res.set("Content-Type", contentType);
+  res.set("Cache-Control", "public, max-age=3600");
+  res.set("Accept-Ranges", "bytes");
+
+  if (rangeInfo === "invalid") {
+    res.set("Content-Range", `bytes */${totalLength}`);
+    return res.status(416).end();
+  }
+
+  if (!rangeInfo) {
+    res.set("Content-Length", String(totalLength));
+    return res.send(buffer);
+  }
+
+  const { start, end } = rangeInfo;
+  const chunk = buffer.subarray(start, end + 1);
+  res.status(206);
+  res.set("Content-Range", `bytes ${start}-${end}/${totalLength}`);
+  res.set("Content-Length", String(chunk.length));
+  return res.send(chunk);
 }
 
 function getMessageSenderMid(msg) {
@@ -143,6 +240,45 @@ async function downloadMediaByE2EESmart(rawMsg) {
   patchedObs.client = patchedClient;
 
   return await obs.downloadMediaByE2EE.call(patchedObs, normalized);
+}
+
+async function downloadMessageMedia({ messageId, isPreview, rawMsg, fallbackMimeType, logPrefix }) {
+  if (!lineClient) throw new Error("Not authenticated");
+  const isE2EEMedia = !!rawMsg?.chunks?.length;
+  let file = null;
+
+  if (isE2EEMedia) {
+    try {
+      file = await downloadMediaByE2EESmart(rawMsg);
+    } catch (e) {
+      console.error(`[${logPrefix}] E2EE smart download failed:`, e.message);
+    }
+    if (!file) {
+      try {
+        const encryptedBlob = await lineClient.base.obs.downloadMessageData({ messageId, isPreview });
+        const e2eePayload = await decryptE2EEDataPayload(rawMsg);
+        const decryptedBuffer = await lineClient.base.e2ee.decryptByKeyMaterial(
+          Buffer.from(await encryptedBlob.arrayBuffer()),
+          e2eePayload.keyMaterial,
+        );
+        file = new Blob(
+          [decryptedBuffer],
+          {
+            type: guessMediaMimeType(
+              e2eePayload.fileName,
+              encryptedBlob.type || fallbackMimeType,
+            ),
+          },
+        );
+      } catch (e) {
+        console.error(`[${logPrefix}] E2EE fallback decrypt failed:`, e.message);
+      }
+    }
+  } else {
+    file = await lineClient.base.obs.downloadMessageData({ messageId, isPreview });
+  }
+
+  return file;
 }
 
 /** @type {import("@evex/linejs").Client | null} */
@@ -414,10 +550,10 @@ app.get("/api/chat/:mid/messages", async (req, res) => {
       },
     });
 
-    // E2EE メッセージを復号する（IMAGE メッセージは復号前にキャッシュ）
+    // E2EE メッセージを復号する（media メッセージは復号前にキャッシュ）
     const decrypted = await Promise.all(
       (raw ?? []).map(async (msg) => {
-        if (msg.contentType === 1 || msg.contentType === "IMAGE") {
+        if (shouldCacheRawMediaMessage(msg)) {
           cacheRawMessage(msg);
         }
         if (msg.contentMetadata?.e2eeVersion) {
@@ -446,50 +582,39 @@ app.get("/api/message/:messageId/image", async (req, res) => {
     assertClient();
     const { messageId } = req.params;
     const isPreview = req.query.preview === "1";
-
     const rawMsg = rawMessageCache.get(messageId);
-    const isE2EEImage = !!rawMsg?.chunks?.length;
-    let file = null;
-
-    // E2EE image: force safe key-selection for incoming 1:1 messages.
-    if (isE2EEImage) {
-      try {
-        file = await downloadMediaByE2EESmart(rawMsg);
-      } catch (e) {
-        console.error("[image] E2EE smart download failed:", e.message);
-      }
-      if (!file) {
-        try {
-          const encryptedBlob = await lineClient.base.obs.downloadMessageData({ messageId, isPreview });
-          const e2eePayload = await decryptE2EEDataPayload(rawMsg);
-          const decryptedBuffer = await lineClient.base.e2ee.decryptByKeyMaterial(
-            Buffer.from(await encryptedBlob.arrayBuffer()),
-            e2eePayload.keyMaterial,
-          );
-          file = new Blob(
-            [decryptedBuffer],
-            {
-              type: guessImageMimeType(
-                e2eePayload.fileName,
-                encryptedBlob.type || "image/jpeg",
-              ),
-            },
-          );
-        } catch (e) {
-          console.error("[image] E2EE fallback decrypt failed:", e.message);
-        }
-      }
-    } else {
-      // Non-E2EE image
-      file = await lineClient.base.obs.downloadMessageData({ messageId, isPreview });
-    }
+    const file = await downloadMessageMedia({
+      messageId,
+      isPreview,
+      rawMsg,
+      fallbackMimeType: "image/jpeg",
+      logPrefix: "image",
+    });
 
     if (!file) return res.status(404).json({ error: "Image not found" });
+    await sendBlobWithRangeSupport(req, res, file, "image/jpeg");
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
-    const arrayBuffer = await file.arrayBuffer();
-    res.set("Content-Type", file.type || "image/jpeg");
-    res.set("Cache-Control", "public, max-age=3600");
-    res.send(Buffer.from(arrayBuffer));
+// Download video
+app.get("/api/message/:messageId/video", async (req, res) => {
+  try {
+    assertClient();
+    const { messageId } = req.params;
+    const isPreview = req.query.preview === "1";
+    const rawMsg = rawMessageCache.get(messageId);
+    const file = await downloadMessageMedia({
+      messageId,
+      isPreview,
+      rawMsg,
+      fallbackMimeType: "video/mp4",
+      logPrefix: "video",
+    });
+
+    if (!file) return res.status(404).json({ error: "Video not found" });
+    await sendBlobWithRangeSupport(req, res, file, "video/mp4");
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -503,7 +628,9 @@ app.post(
     try {
       assertClient();
       const { mid } = req.params;
-      const mimeType = (req.headers["content-type"] || "image/jpeg").split(";")[0].trim();
+      const mimeType = String(getHeaderValue(req.headers["content-type"]) || "image/jpeg")
+        .split(";")[0]
+        .trim();
       const blob = new Blob([req.body], { type: mimeType });
       let sentMessage = null;
 
@@ -515,7 +642,6 @@ app.post(
           oType: "image",
           filename: "image.jpg",
         });
-        cacheRawMessage(sentMessage);
       } else {
         // グループチャット: 非E2EE
         const { objId } = await lineClient.base.obs.uploadObjTalk(mid, "image", blob);
@@ -526,6 +652,61 @@ app.post(
         });
       }
 
+      if (sentMessage) cacheRawMessage(sentMessage);
+      res.json({
+        success: true,
+        message: sentMessage ? formatMessage(sentMessage) : null,
+      });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  },
+);
+
+// Send video
+app.post(
+  "/api/chat/:mid/send-video",
+  express.raw({ type: "*/*", limit: "100mb" }),
+  async (req, res) => {
+    try {
+      assertClient();
+      const { mid } = req.params;
+      if (!req.body?.length) {
+        return res.status(400).json({ error: "video body required" });
+      }
+
+      const mimeType = String(getHeaderValue(req.headers["content-type"]) || "video/mp4")
+        .split(";")[0]
+        .trim();
+      const durationMs = parseVideoDurationMs(req.headers["x-video-duration-ms"]);
+      const blob = new Blob([req.body], { type: mimeType });
+      let sentMessage = null;
+
+      if (mid.startsWith("u")) {
+        // 1対1チャット: E2EE
+        sentMessage = await lineClient.base.obs.uploadMediaByE2EE({
+          data: blob,
+          to: mid,
+          oType: "video",
+          filename: "video.mp4",
+        });
+      } else {
+        // グループチャット: 非E2EE
+        const { objId, objHash } = await lineClient.base.obs.uploadObjTalk(mid, "video", blob);
+        sentMessage = await lineClient.base.talk.sendMessage({
+          to: mid,
+          contentType: 2,
+          contentMetadata: {
+            OID: objId,
+            VID: objId,
+            DURATION: String(durationMs),
+            SIZE: String(blob.size),
+            HASH: objHash,
+          },
+        });
+      }
+
+      if (sentMessage) cacheRawMessage(sentMessage);
       res.json({
         success: true,
         message: sentMessage ? formatMessage(sentMessage) : null,
@@ -578,8 +759,8 @@ async function listenWithRestart(client, signal) {
         if (signal.aborted || lineClient !== client) break;
         if (event.type === "SEND_MESSAGE" || event.type === "RECEIVE_MESSAGE") {
           let msg = event.message;
-          // IMAGE メッセージは復号前にキャッシュ（E2EE画像ダウンロード用）
-          if (msg.contentType === 1 || msg.contentType === "IMAGE") {
+          // media メッセージは復号前にキャッシュ（E2EEメディアダウンロード用）
+          if (shouldCacheRawMediaMessage(msg)) {
             cacheRawMessage(msg);
           }
           try {

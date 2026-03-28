@@ -42,6 +42,8 @@
   var sendBtn = document.getElementById("send-btn");
   var imageAttachBtn = document.getElementById("image-attach-btn");
   var imageInput = document.getElementById("image-input");
+  var videoAttachBtn = document.getElementById("video-attach-btn");
+  var videoInput = document.getElementById("video-input");
 
   setupAppFrame();
   setupLoginTabs();
@@ -133,8 +135,13 @@
       imageAttachBtn.onclick = onImageAttachClick;
       imageAttachBtn.onkeydown = onComposeControlKeyDown;
     }
+    if (videoAttachBtn) {
+      videoAttachBtn.onclick = onVideoAttachClick;
+      videoAttachBtn.onkeydown = onComposeControlKeyDown;
+    }
     sendBtn.onkeydown = onComposeControlKeyDown;
-    imageInput.onchange = onImageSelected;
+    if (imageInput) imageInput.onchange = onImageSelected;
+    if (videoInput) videoInput.onchange = onVideoSelected;
   }
 
   function bindSocketEvents() {
@@ -549,6 +556,11 @@
     return ct === 7 || ct === "STICKER" || ct === "7";
   }
 
+  function isVideoMessage(msg) {
+    var ct = msg && msg.contentType;
+    return ct === 2 || ct === "VIDEO" || ct === "2";
+  }
+
   function getStickerPreviewUrl(msg) {
     if (!isStickerMessage(msg)) return "";
     var metadata = msg && msg.contentMetadata ? msg.contentMetadata : null;
@@ -608,6 +620,20 @@
         window.open("/api/message/" + encodeURIComponent(msgId) + "/image", "_blank");
       };
       bubble.appendChild(imgEl);
+    } else if (isVideoMessage(msg)) {
+      if (msgId) {
+        bubble.className = "msg-bubble is-video";
+        var videoEl = document.createElement("video");
+        videoEl.className = "msg-video";
+        videoEl.src = "/api/message/" + encodeURIComponent(msgId) + "/video";
+        videoEl.controls = true;
+        videoEl.preload = "metadata";
+        videoEl.playsInline = true;
+        bubble.appendChild(videoEl);
+      } else {
+        bubble.className = "msg-bubble";
+        bubble.textContent = "[動画]";
+      }
     } else if (isStickerMessage(msg)) {
       var stickerUrl = getStickerPreviewUrl(msg);
       if (stickerUrl) {
@@ -672,6 +698,7 @@
 
     sendBtn.disabled = true;
     if (imageAttachBtn) imageAttachBtn.disabled = true;
+    if (videoAttachBtn) videoAttachBtn.disabled = true;
 
     var xhr = new XMLHttpRequest();
     xhr.open("POST", "/api/chat/" + encodeURIComponent(toMid) + "/send-image", true);
@@ -680,6 +707,7 @@
       if (xhr.readyState !== 4) return;
       sendBtn.disabled = false;
       if (imageAttachBtn) imageAttachBtn.disabled = false;
+      if (videoAttachBtn) videoAttachBtn.disabled = false;
 
       var data = null;
       try { data = JSON.parse(xhr.responseText); } catch (ignore) {}
@@ -711,6 +739,123 @@
     xhr.send(file);
   }
 
+  function onVideoSelected() {
+    if (!videoInput.files || !videoInput.files[0]) return;
+    var file = videoInput.files[0];
+    videoInput.value = "";
+    sendVideoFile(file);
+  }
+
+  function onVideoAttachClick() {
+    if (!videoInput || !selectedChat || !selectedChat.mid) return;
+    if (videoAttachBtn && videoAttachBtn.disabled) return;
+
+    if (typeof videoInput.showPicker === "function") {
+      try {
+        videoInput.showPicker();
+        return;
+      } catch (ignore) {
+        // Fallback to click() for browsers that reject showPicker()
+      }
+    }
+    videoInput.click();
+  }
+
+  function getVideoDurationMs(file, callback) {
+    if (!window.URL || typeof window.URL.createObjectURL !== "function") {
+      callback(0);
+      return;
+    }
+
+    var objectUrl = window.URL.createObjectURL(file);
+    var probeVideo = document.createElement("video");
+    var finished = false;
+
+    function cleanup() {
+      probeVideo.removeAttribute("src");
+      if (typeof probeVideo.load === "function") {
+        probeVideo.load();
+      }
+      window.URL.revokeObjectURL(objectUrl);
+    }
+
+    function finish(durationMs) {
+      if (finished) return;
+      finished = true;
+      cleanup();
+      callback(durationMs);
+    }
+
+    var timeoutId = window.setTimeout(function () {
+      finish(0);
+    }, 3000);
+
+    probeVideo.preload = "metadata";
+    probeVideo.onloadedmetadata = function () {
+      window.clearTimeout(timeoutId);
+      var seconds = Number(probeVideo.duration);
+      if (!isFinite(seconds) || seconds <= 0) {
+        finish(0);
+        return;
+      }
+      finish(Math.max(1, Math.round(seconds * 1000)));
+    };
+    probeVideo.onerror = function () {
+      window.clearTimeout(timeoutId);
+      finish(0);
+    };
+    probeVideo.src = objectUrl;
+  }
+
+  function sendVideoFile(file) {
+    if (!selectedChat || !selectedChat.mid) return;
+    var toMid = String(selectedChat.mid);
+
+    sendBtn.disabled = true;
+    if (imageAttachBtn) imageAttachBtn.disabled = true;
+    if (videoAttachBtn) videoAttachBtn.disabled = true;
+
+    getVideoDurationMs(file, function (durationMs) {
+      var xhr = new XMLHttpRequest();
+      xhr.open("POST", "/api/chat/" + encodeURIComponent(toMid) + "/send-video", true);
+      xhr.setRequestHeader("Content-Type", file.type || "video/mp4");
+      xhr.setRequestHeader("X-Video-Duration-Ms", String(durationMs || 0));
+      xhr.onreadystatechange = function () {
+        if (xhr.readyState !== 4) return;
+        sendBtn.disabled = false;
+        if (imageAttachBtn) imageAttachBtn.disabled = false;
+        if (videoAttachBtn) videoAttachBtn.disabled = false;
+
+        var data = null;
+        try { data = JSON.parse(xhr.responseText); } catch (ignore) {}
+
+        if (xhr.status < 200 || xhr.status >= 300) {
+          window.alert("動画の送信に失敗しました: " + (data && data.error ? data.error : xhr.status));
+          return;
+        }
+
+        var now = (new Date()).getTime();
+        var serverMessage = data && data.message ? data.message : null;
+        var createdTime = toTimestampMs(serverMessage && serverMessage.createdTime);
+        if (!createdTime) createdTime = now;
+        var msg = {
+          id: serverMessage && serverMessage.id ? String(serverMessage.id) : String(now),
+          from: serverMessage && serverMessage.from ? String(serverMessage.from) : (myMid ? myMid : "__me__"),
+          to: serverMessage && serverMessage.to ? String(serverMessage.to) : toMid,
+          text: "",
+          contentType: serverMessage && serverMessage.contentType ? serverMessage.contentType : 2,
+          createdTime: createdTime
+        };
+        cacheMessage(toMid, msg);
+        updateChatLastMessageTime(toMid, createdTime);
+        if (selectedChat && String(selectedChat.mid) === toMid) {
+          renderMessages(toMid);
+        }
+      };
+      xhr.send(file);
+    });
+  }
+
   function onSendSubmit(e) {
     if (e && e.preventDefault) e.preventDefault();
     sendCurrentMessage();
@@ -735,6 +880,7 @@
 
     var controls = [];
     if (imageAttachBtn) controls.push(imageAttachBtn);
+    if (videoAttachBtn) controls.push(videoAttachBtn);
     controls.push(messageInput);
     controls.push(sendBtn);
 
@@ -783,7 +929,10 @@
       var cursorPos;
       if (target === sendBtn) {
         cursorPos = messageLength;
-      } else if (imageAttachBtn && target === imageAttachBtn) {
+      } else if (
+        (imageAttachBtn && target === imageAttachBtn) ||
+        (videoAttachBtn && target === videoAttachBtn)
+      ) {
         cursorPos = 0;
       } else {
         cursorPos = (keyCode === 37 || keyCode === 38) ? 0 : messageLength;
@@ -804,6 +953,7 @@
     var toMid = String(selectedChat.mid);
     sendBtn.disabled = true;
     if (imageAttachBtn) imageAttachBtn.disabled = true;
+    if (videoAttachBtn) videoAttachBtn.disabled = true;
     messageInput.disabled = true;
 
     apiRequest("POST", "/api/chat/" + encodeURIComponent(toMid) + "/send", { text: text }, function (status, data) {
@@ -812,6 +962,7 @@
         window.alert("送信に失敗しました: " + errorMessage);
         sendBtn.disabled = false;
         if (imageAttachBtn) imageAttachBtn.disabled = false;
+        if (videoAttachBtn) videoAttachBtn.disabled = false;
         messageInput.disabled = false;
         messageInput.focus();
         return;
@@ -837,6 +988,7 @@
       adjustTextarea();
       sendBtn.disabled = false;
       if (imageAttachBtn) imageAttachBtn.disabled = false;
+      if (videoAttachBtn) videoAttachBtn.disabled = false;
       messageInput.disabled = false;
       messageInput.focus();
     });

@@ -14,6 +14,7 @@ LINE を Web で利用するための非公式チャットアプリです。
 - メッセージ一覧取得、リアルタイム受信
 - テキスト送信
 - 画像送信/表示（E2EE 画像を含む）
+- 動画送信/表示（E2EE 動画を含む）
 - PWA 対応（Service Worker / Manifest）
 
 ## 技術スタック
@@ -67,6 +68,8 @@ npm run dev
 - `POST /api/chat/:mid/send` テキスト送信
 - `POST /api/chat/:mid/send-image` 画像送信
 - `GET /api/message/:messageId/image` 画像取得
+- `POST /api/chat/:mid/send-video` 動画送信
+- `GET /api/message/:messageId/video` 動画取得
 
 ## Socket.IO イベント（主要）
 
