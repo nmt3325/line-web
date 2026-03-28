@@ -544,6 +544,41 @@
     return ct === 1 || ct === "IMAGE" || ct === "1";
   }
 
+  function isStickerMessage(msg) {
+    var ct = msg && msg.contentType;
+    return ct === 7 || ct === "STICKER" || ct === "7";
+  }
+
+  function getStickerPreviewUrl(msg) {
+    if (!isStickerMessage(msg)) return "";
+    var metadata = msg && msg.contentMetadata ? msg.contentMetadata : null;
+    var stickerId = metadata && metadata.STKID ? String(metadata.STKID) : "";
+    if (!stickerId) return "";
+    var isAnimated = metadata && String(metadata.STKOPT || "").toUpperCase() === "A";
+    var fileName = isAnimated ? "sticker_animation.png" : "sticker.png";
+    return "https://stickershop.line-scdn.net/stickershop/v1/sticker/"
+      + encodeURIComponent(stickerId)
+      + "/android/"
+      + fileName;
+  }
+
+  function getStickerFallbackUrl(msg) {
+    var metadata = msg && msg.contentMetadata ? msg.contentMetadata : null;
+    var stickerId = metadata && metadata.STKID ? String(metadata.STKID) : "";
+    if (!stickerId) return "";
+    return "https://stickershop.line-scdn.net/stickershop/v1/sticker/"
+      + encodeURIComponent(stickerId)
+      + "/android/sticker.png";
+  }
+
+  function getStickerAltText(msg) {
+    var metadata = msg && msg.contentMetadata ? msg.contentMetadata : null;
+    var stickerText = metadata && metadata.STKTXT ? String(metadata.STKTXT) : "";
+    if (stickerText) return stickerText;
+    var stickerId = metadata && metadata.STKID ? String(metadata.STKID) : "";
+    return stickerId ? ("スタンプ " + stickerId) : "スタンプ";
+  }
+
   function appendMessageEl(msg, isGroup) {
     var li = document.createElement("li");
     var bubble = document.createElement("div");
@@ -573,6 +608,29 @@
         window.open("/api/message/" + encodeURIComponent(msgId) + "/image", "_blank");
       };
       bubble.appendChild(imgEl);
+    } else if (isStickerMessage(msg)) {
+      var stickerUrl = getStickerPreviewUrl(msg);
+      if (stickerUrl) {
+        bubble.className = "msg-bubble is-image is-sticker";
+        var stickerEl = document.createElement("img");
+        stickerEl.className = "msg-sticker";
+        stickerEl.src = stickerUrl;
+        stickerEl.alt = getStickerAltText(msg);
+        stickerEl.loading = "lazy";
+        stickerEl.referrerPolicy = "no-referrer";
+        stickerEl.onerror = function () {
+          var fallback = getStickerFallbackUrl(msg);
+          if (!fallback || stickerEl.src === fallback) return;
+          stickerEl.src = fallback;
+        };
+        stickerEl.onclick = function () {
+          window.open(stickerEl.src, "_blank");
+        };
+        bubble.appendChild(stickerEl);
+      } else {
+        bubble.className = "msg-bubble";
+        bubble.textContent = "[スタンプ]";
+      }
     } else {
       bubble.className = "msg-bubble";
       bubble.textContent = msg && msg.text ? String(msg.text) : "[メディア]";
@@ -683,6 +741,18 @@
     var target = e && e.target ? e.target : null;
     var currentIndex = controls.indexOf(target);
     if (currentIndex === -1) return true;
+
+    // モバイル表示では、画像ボタンから左キーで戻るボタンへ移動できるようにする
+    if (keyCode === 37 && imageAttachBtn && target === imageAttachBtn) {
+      var canFocusBackToFriends = backToFriendsBtn &&
+        !backToFriendsBtn.disabled &&
+        backToFriendsBtn.offsetParent !== null;
+      if (canFocusBackToFriends) {
+        if (e.preventDefault) e.preventDefault();
+        backToFriendsBtn.focus();
+        return false;
+      }
+    }
 
     // テキスト入力中は通常のカーソル移動を優先し、端まで移動したときだけフォーカス移動する
     if (target === messageInput) {

@@ -577,6 +577,15 @@ body.standalone-mode #fullscreen-btn {
   cursor: pointer;
 }
 
+.msg-sticker {
+  display: block;
+  max-width: 170px;
+  max-height: 170px;
+  width: auto;
+  height: auto;
+  cursor: pointer;
+}
+
 .msg-bubble.is-image {
   padding: 3px;
   background: transparent;

@@ -1,1 +1,1 @@
-# Claude.mdを参照してください。
+# CLAUDE.mdを参照して
