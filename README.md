@@ -32,6 +32,12 @@ LINE を Web で利用するための非公式チャットアプリです。
 npm install
 ```
 
+`npm install` で `@jsr/...` の 404 が出る場合は、`.npmrc` に次の設定が必要です。
+
+```ini
+@jsr:registry=https://npm.jsr.io
+```
+
 ## 起動
 
 ```bash
