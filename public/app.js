@@ -9,6 +9,7 @@
   // mid -> { mid, name } for group sender display
   var contactCache = {};
   var DEFAULT_AVATAR = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==";
+  var isLegacyIOS6Browser = detectLegacyIOS6Browser();
 
   var loginScreen = document.getElementById("login-screen");
   var chatScreen = document.getElementById("chat-screen");
@@ -36,6 +37,7 @@
   var backToFriendsBtn = document.getElementById("back-to-friends");
   var chatAvatar = document.getElementById("chat-avatar");
   var chatName = document.getElementById("chat-name");
+  var messagesContainer = document.getElementById("messages-container");
   var messageListEl = document.getElementById("message-list");
   var sendForm = document.getElementById("send-form");
   var messageInput = document.getElementById("message-input");
@@ -49,6 +51,7 @@
   setupLoginTabs();
   setupSidebarTabs();
   bindEvents();
+  bindViewportEvents();
   socket.emit("auth:auto");
   bindSocketEvents();
   registerServiceWorker();
@@ -131,6 +134,7 @@
     messageInput.oninput = adjustTextarea;
     messageInput.onkeyup = adjustTextarea;
     messageInput.onkeydown = onMessageKeyDown;
+    messageInput.onfocus = onMessageInputFocus;
     if (imageAttachBtn) {
       imageAttachBtn.onclick = onImageAttachClick;
       imageAttachBtn.onkeydown = onComposeControlKeyDown;
@@ -142,6 +146,22 @@
     sendBtn.onkeydown = onComposeControlKeyDown;
     if (imageInput) imageInput.onchange = onImageSelected;
     if (videoInput) videoInput.onchange = onVideoSelected;
+  }
+
+  function bindViewportEvents() {
+    if (window.addEventListener) {
+      window.addEventListener("resize", onViewportChange);
+    }
+    if (window.visualViewport && window.visualViewport.addEventListener) {
+      window.visualViewport.addEventListener("resize", onViewportChange);
+      window.visualViewport.addEventListener("scroll", onViewportChange);
+    }
+  }
+
+  function onViewportChange() {
+    if (!selectedChat || !selectedChat.mid) return;
+    if (document.activeElement !== messageInput) return;
+    scrollToBottomWithRetry();
   }
 
   function bindSocketEvents() {
@@ -528,7 +548,7 @@
 
     if (messages.length === 0) {
       setMessageListMessage("メッセージがありません", false);
-      scrollToBottom();
+      scrollToBottomWithRetry();
       return;
     }
 
@@ -536,7 +556,7 @@
       appendMessageEl(messages[i], isGroup);
     }
 
-    scrollToBottom();
+    scrollToBottomWithRetry();
   }
 
   function getSenderName(fromMid) {
@@ -734,6 +754,7 @@
       updateChatLastMessageTime(toMid, createdTime);
       if (selectedChat && String(selectedChat.mid) === toMid) {
         renderMessages(toMid);
+        scrollToBottomWithRetry();
       }
     };
     xhr.send(file);
@@ -850,6 +871,7 @@
         updateChatLastMessageTime(toMid, createdTime);
         if (selectedChat && String(selectedChat.mid) === toMid) {
           renderMessages(toMid);
+          scrollToBottomWithRetry();
         }
       };
       xhr.send(file);
@@ -860,6 +882,11 @@
     if (e && e.preventDefault) e.preventDefault();
     sendCurrentMessage();
     return false;
+  }
+
+  function onMessageInputFocus() {
+    if (!selectedChat || !selectedChat.mid) return;
+    scrollToBottomWithRetry();
   }
 
   function onMessageKeyDown(e) {
@@ -951,10 +978,13 @@
     if (!text) return;
 
     var toMid = String(selectedChat.mid);
+    var disableInputDuringSend = !isLegacyIOS6Browser;
     sendBtn.disabled = true;
     if (imageAttachBtn) imageAttachBtn.disabled = true;
     if (videoAttachBtn) videoAttachBtn.disabled = true;
-    messageInput.disabled = true;
+    if (disableInputDuringSend) {
+      messageInput.disabled = true;
+    }
 
     apiRequest("POST", "/api/chat/" + encodeURIComponent(toMid) + "/send", { text: text }, function (status, data) {
       if (status < 200 || status >= 300) {
@@ -963,8 +993,10 @@
         sendBtn.disabled = false;
         if (imageAttachBtn) imageAttachBtn.disabled = false;
         if (videoAttachBtn) videoAttachBtn.disabled = false;
-        messageInput.disabled = false;
-        messageInput.focus();
+        if (disableInputDuringSend) {
+          messageInput.disabled = false;
+        }
+        focusMessageInputAfterSend();
         return;
       }
 
@@ -989,14 +1021,20 @@
       sendBtn.disabled = false;
       if (imageAttachBtn) imageAttachBtn.disabled = false;
       if (videoAttachBtn) videoAttachBtn.disabled = false;
-      messageInput.disabled = false;
-      messageInput.focus();
+      if (disableInputDuringSend) {
+        messageInput.disabled = false;
+      }
+      focusMessageInputAfterSend();
+      scrollToBottomWithRetry();
     });
   }
 
   // --- UI helpers ---
 
   function setupAppFrame() {
+    if (isLegacyIOS6Browser) {
+      addClass(document.body, "legacy-ios6-browser");
+    }
     syncDisplayMode();
     syncFullscreenButton();
 
@@ -1125,8 +1163,34 @@
   }
 
   function scrollToBottom() {
-    var container = document.getElementById("messages-container");
+    var container = messagesContainer;
     if (container) container.scrollTop = container.scrollHeight;
+  }
+
+  function scrollToBottomWithRetry() {
+    scrollToBottom();
+    if (typeof window.requestAnimationFrame === "function") {
+      window.requestAnimationFrame(function () {
+        scrollToBottom();
+      });
+    }
+    window.setTimeout(scrollToBottom, 80);
+    window.setTimeout(scrollToBottom, 200);
+  }
+
+  function focusMessageInputAfterSend() {
+    if (!messageInput || messageInput.disabled) return;
+    if (isLegacyIOS6Browser) {
+      stabilizeLegacyIOSViewport();
+      return;
+    }
+    messageInput.focus();
+  }
+
+  function stabilizeLegacyIOSViewport() {
+    if (!isLegacyIOS6Browser || typeof window.scrollTo !== "function") return;
+    window.setTimeout(function () { window.scrollTo(0, 0); }, 0);
+    window.setTimeout(function () { window.scrollTo(0, 0); }, 120);
   }
 
   function adjustTextarea() {
@@ -1189,4 +1253,16 @@
   function pad2(num) { return num < 10 ? "0" + num : String(num); }
 
   function trim(value) { return String(value || "").replace(/^\s+|\s+$/g, ""); }
+
+  function detectLegacyIOS6Browser() {
+    var nav = window.navigator || {};
+    var ua = nav.userAgent ? String(nav.userAgent) : "";
+    if (!ua) return false;
+    if (!/iP(hone|od|ad)/.test(ua)) return false;
+    var match = ua.match(/OS (\d+)_/);
+    if (!match) return false;
+    var major = parseInt(match[1], 10);
+    if (!isFinite(major)) return false;
+    return major <= 6;
+  }
 }());
