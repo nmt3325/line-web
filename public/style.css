@@ -780,3 +780,18 @@ body.standalone-mode #fullscreen-btn {
     margin-top: 40px;
   }
 }
+
+.date-divider {
+  text-align: center;
+  margin: 16px 0;
+  clear: both;
+}
+
+.date-divider span {
+  display: inline-block;
+  background: rgba(0, 0, 0, 0.25);
+  color: #fff;
+  font-size: 11px;
+  padding: 4px 12px;
+  border-radius: 12px;
+}

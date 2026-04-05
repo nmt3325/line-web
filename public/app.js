@@ -547,7 +547,7 @@
   }
 
   function loadMessages(mid) {
-    apiRequest("GET", "/api/chat/" + encodeURIComponent(mid) + "/messages?limit=30", null, function (status, data) {
+    apiRequest("GET", "/api/chat/" + encodeURIComponent(mid) + "/messages?limit=100", null, function (status, data) {
       if (status < 200 || status >= 300) {
         setMessageListMessage(data && data.error ? data.error : "メッセージ取得に失敗しました", true);
         return;
@@ -688,8 +688,21 @@
       return;
     }
 
+    var lastDateStr = null;
+
     for (var i = 0; i < messages.length; i += 1) {
-      appendMessageEl(messages[i], isGroup);
+      var msg = messages[i];
+      var msgDateStr = formatDateHeader(msg.createdTime);
+      if (lastDateStr !== msgDateStr) {
+        var dateDivider = document.createElement("li");
+        dateDivider.className = "date-divider";
+        var dateSpan = document.createElement("span");
+        dateSpan.textContent = msgDateStr;
+        dateDivider.appendChild(dateSpan);
+        messageListEl.appendChild(dateDivider);
+        lastDateStr = msgDateStr;
+      }
+      appendMessageEl(msg, isGroup);
     }
 
     scrollToBottomWithRetry();
@@ -1481,6 +1494,27 @@
   function formatTime(ts) {
     var d = ts ? new Date(ts) : new Date();
     return pad2(d.getHours()) + ":" + pad2(d.getMinutes());
+  }
+
+  function formatDateHeader(ts) {
+    var today = new Date();
+    var d = ts ? new Date(ts) : new Date();
+    
+    // reset time parts for comparison
+    today.setHours(0,0,0,0);
+    var targetDate = new Date(d);
+    targetDate.setHours(0,0,0,0);
+    
+    var diffMs = today.getTime() - targetDate.getTime();
+    var diffDays = Math.round(diffMs / 86400000);
+    
+    if (diffDays === 0) {
+      return "今日";
+    } else if (diffDays === 1) {
+      return "昨日";
+    } else {
+      return d.getFullYear() + "/" + pad2(d.getMonth() + 1) + "/" + pad2(d.getDate());
+    }
   }
 
   function pad2(num) { return num < 10 ? "0" + num : String(num); }
