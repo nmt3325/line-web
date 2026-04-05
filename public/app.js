@@ -8,6 +8,10 @@
   var messageCache = {};
   // mid -> { mid, name } for group sender display
   var contactCache = {};
+  // chatMid -> { chatId, readers: { readerMid: lastReadMessageId }, ... }
+  var readStatusCache = {};
+  // chatMid -> [ { mid, name, avatarUrl } ]
+  var groupMembersCache = {};
   var DEFAULT_AVATAR = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==";
   var isLegacyIOS6Browser = detectLegacyIOS6Browser();
 
@@ -203,6 +207,20 @@
       setStatus(message, "error");
       setLoginBusy(false);
       addClass(pincodeBox, "hidden");
+    });
+
+    socket.on("chat:read", function (data) {
+      if (!data || !data.chatMid) return;
+      var chatMid = String(data.chatMid);
+      var readerMid = data.readerMid ? String(data.readerMid) : "";
+
+      // 既読情報が来たら該当チャットの表示を更新
+      if (selectedChat && String(selectedChat.mid) === chatMid) {
+        // 簡易的にAPIを再取得して正確な既読範囲を取得
+        fetchReadStatus(chatMid, function () {
+          renderMessages(chatMid);
+        });
+      }
     });
 
     socket.on("chat:message", function (msg) {
@@ -535,8 +553,126 @@
         return;
       }
       messageCache[mid] = sortMessagesByCreatedTime(data && data.messages ? data.messages : []);
-      renderMessages(mid);
+      // 既読情報を取得してからメッセージを描画
+      fetchReadStatus(mid, function () {
+        renderMessages(mid);
+      });
+      // グループチャットの場合はメンバー情報も取得
+      if (selectedChat && selectedChat.isGroup && !groupMembersCache[mid]) {
+        fetchGroupMembers(mid);
+      }
     });
+  }
+
+  function fetchReadStatus(mid, callback) {
+    apiRequest("GET", "/api/chat/" + encodeURIComponent(mid) + "/read-status", null, function (status, data) {
+      if (status >= 200 && status < 300 && data && data.readRanges) {
+        readStatusCache[mid] = data.readRanges;
+      }
+      if (callback) callback();
+    });
+  }
+
+  function fetchGroupMembers(mid) {
+    apiRequest("GET", "/api/chat/" + encodeURIComponent(mid) + "/members", null, function (status, data) {
+      if (status >= 200 && status < 300 && data && data.members) {
+        groupMembersCache[mid] = data.members;
+        // contactCache にもメンバーを追加
+        for (var i = 0; i < data.members.length; i += 1) {
+          var m = data.members[i];
+          if (m && m.mid) {
+            contactCache[String(m.mid)] = { mid: m.mid, name: m.name || m.mid, avatarUrl: m.avatarUrl };
+          }
+        }
+      }
+    });
+  }
+
+  // API レスポンス構造:
+  // readRanges = [{ chatId, ranges: { readerMid: [ { 1: startMsgId, 2: endMsgId, 3: startTime, 4: endTime } ] } }]
+  // フィールド 4 = endTime: そのユーザーが最後に読んだメッセージの作成時刻
+
+  function getMaxEndTimeForReader(rangeEntries) {
+    // rangeEntries = [ { 1: .., 2: .., 3: .., 4: endTime }, ... ]
+    if (!rangeEntries || !rangeEntries.length) return 0;
+    var maxEnd = 0;
+    for (var j = 0; j < rangeEntries.length; j += 1) {
+      var entry = rangeEntries[j];
+      if (!entry) continue;
+      // フィールド "4" = endTime
+      var endTime = toTimestampMs(entry["4"] || entry.endTime || 0);
+      if (endTime > maxEnd) maxEnd = endTime;
+    }
+    return maxEnd;
+  }
+
+  function getReadCountForMessage(msg, chatMid) {
+    if (!msg || !myMid) return 0;
+    var fromValue = msg.from ? String(msg.from) : "";
+    // 自分のメッセージでなければ既読は表示しない
+    if (!fromValue || fromValue !== String(myMid)) return 0;
+
+    var rangesArr = readStatusCache[chatMid];
+    if (!rangesArr || !rangesArr.length) return 0;
+
+    var readCount = 0;
+    var msgCreatedTime = toTimestampMs(msg.createdTime);
+    if (!msgCreatedTime) return 0;
+
+    for (var i = 0; i < rangesArr.length; i += 1) {
+      var rangeObj = rangesArr[i];
+      if (!rangeObj) continue;
+
+      // ranges: { readerMid: [ entries ] }
+      var rangesMap = rangeObj.ranges || {};
+      for (var readerMid in rangesMap) {
+        if (!rangesMap.hasOwnProperty(readerMid)) continue;
+        if (readerMid === String(myMid)) continue;
+        var maxEndTime = getMaxEndTimeForReader(rangesMap[readerMid]);
+        if (maxEndTime > 0 && msgCreatedTime <= maxEndTime) {
+          readCount += 1;
+        }
+      }
+    }
+    return readCount;
+  }
+
+  function isMessageRead(msg, chatMid) {
+    return getReadCountForMessage(msg, chatMid) > 0;
+  }
+
+  function getReadersForMessage(msg, chatMid) {
+    if (!msg || !myMid) return [];
+    var fromValue = msg.from ? String(msg.from) : "";
+    if (!fromValue || fromValue !== String(myMid)) return [];
+
+    var rangesArr = readStatusCache[chatMid];
+    if (!rangesArr || !rangesArr.length) return [];
+
+    var readers = [];
+    var msgCreatedTime = toTimestampMs(msg.createdTime);
+    if (!msgCreatedTime) return [];
+
+    for (var i = 0; i < rangesArr.length; i += 1) {
+      var rangeObj = rangesArr[i];
+      if (!rangeObj) continue;
+
+      var rangesMap = rangeObj.ranges || {};
+      for (var readerMid in rangesMap) {
+        if (!rangesMap.hasOwnProperty(readerMid)) continue;
+        if (readerMid === String(myMid)) continue;
+        var maxEndTime = getMaxEndTimeForReader(rangesMap[readerMid]);
+        if (maxEndTime > 0 && msgCreatedTime <= maxEndTime) {
+          var cached = contactCache[readerMid];
+          readers.push({
+            mid: readerMid,
+            name: cached ? cached.name : (String(readerMid).slice(0, 8) + "..."),
+            avatarUrl: cached && cached.avatarUrl ? cached.avatarUrl : DEFAULT_AVATAR
+          });
+        }
+      }
+    }
+    return readers;
   }
 
   function renderMessages(mid) {
@@ -685,9 +821,106 @@
     time.className = "msg-time";
     time.textContent = formatTime(msg && msg.createdTime ? msg.createdTime : null);
 
+    // 既読表示（自分の送信メッセージのみ）
+    var readEl = null;
+    if (isOut && selectedChat) {
+      var chatMid = String(selectedChat.mid);
+      if (isGroup) {
+        var readCount = getReadCountForMessage(msg, chatMid);
+        if (readCount > 0) {
+          readEl = document.createElement("div");
+          readEl.className = "msg-read msg-read-group";
+          readEl.textContent = "既読 " + readCount;
+          readEl.onclick = (function (m, cm) {
+            return function () {
+              showReadOverlay(m, cm);
+            };
+          })(msg, chatMid);
+        }
+      } else {
+        if (isMessageRead(msg, chatMid)) {
+          readEl = document.createElement("div");
+          readEl.className = "msg-read";
+          readEl.textContent = "既読";
+        }
+      }
+    }
+
     li.appendChild(bubble);
-    li.appendChild(time);
+    // 既読 + 時刻をまとめる
+    if (readEl) {
+      var metaWrap = document.createElement("div");
+      metaWrap.className = "msg-meta";
+      metaWrap.appendChild(readEl);
+      metaWrap.appendChild(time);
+      li.appendChild(metaWrap);
+    } else {
+      li.appendChild(time);
+    }
     messageListEl.appendChild(li);
+  }
+
+  function showReadOverlay(msg, chatMid) {
+    hideReadOverlay();
+    var readers = getReadersForMessage(msg, chatMid);
+    if (readers.length === 0) return;
+
+    var overlay = document.createElement("div");
+    overlay.id = "read-overlay";
+
+    var inner = document.createElement("div");
+    inner.id = "read-overlay-inner";
+
+    var header = document.createElement("div");
+    header.id = "read-overlay-header";
+
+    var title = document.createTextNode("既読 " + readers.length + "人");
+    header.appendChild(title);
+
+    var closeBtn = document.createElement("button");
+    closeBtn.className = "close-btn";
+    closeBtn.textContent = "×";
+    closeBtn.onclick = hideReadOverlay;
+    header.appendChild(closeBtn);
+
+    var list = document.createElement("ul");
+    list.id = "read-overlay-list";
+
+    for (var i = 0; i < readers.length; i += 1) {
+      var r = readers[i];
+      var li = document.createElement("li");
+
+      var avatar = document.createElement("img");
+      avatar.className = "reader-avatar";
+      avatar.src = r.avatarUrl || DEFAULT_AVATAR;
+      avatar.alt = r.name || "";
+      avatar.onerror = function () { this.src = DEFAULT_AVATAR; };
+
+      var nameEl = document.createElement("div");
+      nameEl.className = "reader-name";
+      nameEl.textContent = r.name || r.mid;
+
+      li.appendChild(avatar);
+      li.appendChild(nameEl);
+      list.appendChild(li);
+    }
+
+    inner.appendChild(header);
+    inner.appendChild(list);
+    overlay.appendChild(inner);
+    document.body.appendChild(overlay);
+
+    // 背景タップで閉じる
+    overlay.onclick = function (e) {
+      if (e.target === overlay) hideReadOverlay();
+    };
+  }
+
+  function hideReadOverlay() {
+    var existing = document.getElementById("read-overlay");
+    if (existing && existing.parentNode) {
+      existing.parentNode.removeChild(existing);
+    }
   }
 
   function onImageSelected() {

@@ -539,16 +539,42 @@ app.get("/api/chat/:mid/messages", async (req, res) => {
     const box = boxes?.messageBoxes?.find((b) => b.id === mid);
     if (!box) return res.json({ messages: [] });
 
-    const raw = await lineClient.base.talk.getPreviousMessagesV2WithRequest({
-      request: {
-        messageBoxId: box.id,
-        endMessageId: {
-          messageId: box.lastDeliveredMessageId.messageId,
-          deliveredTime: box.lastDeliveredMessageId.deliveredTime,
-        },
-        messagesCount: limit,
-      },
-    });
+    // LINE の getPreviousMessagesV2WithRequest は endMessageId の型（BigInt vs Number）
+    // によって一部のチャットBOXで 0 件を返すことがある。
+    // Number(messageId)+1 が最も多くのBOXで成功するが、精度ロスで逆に取得できなくなる
+    // BOXもあるため、複数の方式をフォールバックで試行する。
+    const msgId = box.lastDeliveredMessageId.messageId;
+    const deliveredTime = box.lastDeliveredMessageId.deliveredTime;
+
+    const endMessageIdCandidates = [
+      // Strategy 1: Number(bigint)+1 — 精度ロスで丸められたIDが多くのBOXでヒットする
+      { messageId: Number(msgId) + 1, deliveredTime: Number(deliveredTime) + 1 },
+      // Strategy 2: 元の BigInt 値（一部のBOXではこれが正しい）
+      { messageId: msgId, deliveredTime },
+      // Strategy 3: BigInt + 1n（endMessageId が排他的な場合のフォールバック）
+      { messageId: typeof msgId === "bigint" ? msgId + 1n : msgId + 1, deliveredTime: deliveredTime + 1 },
+    ];
+
+    let raw = null;
+    for (const endMessageId of endMessageIdCandidates) {
+      try {
+        const result = await lineClient.base.talk.getPreviousMessagesV2WithRequest({
+          request: {
+            messageBoxId: box.id,
+            endMessageId,
+            messagesCount: limit,
+          },
+        });
+        if ((result ?? []).length > 0) {
+          raw = result;
+          break;
+        }
+        // 最初の試行結果を保持（全て 0 件の場合に使用）
+        if (!raw) raw = result;
+      } catch {
+        // 型エラー等は無視して次を試行
+      }
+    }
 
     // E2EE メッセージを復号する（media メッセージは復号前にキャッシュ）
     const decrypted = await Promise.all(
@@ -737,6 +763,56 @@ app.post("/api/chat/:mid/send", async (req, res) => {
   }
 });
 
+// 既読情報取得
+app.get("/api/chat/:mid/read-status", async (req, res) => {
+  try {
+    assertClient();
+    const { mid } = req.params;
+    const result = await lineClient.base.talk.getMessageReadRange({
+      chatIds: [mid],
+    });
+    // BigInt を Number/String に変換してシリアライズ可能にする
+    const sanitized = JSON.parse(
+      JSON.stringify(result ?? [], (k, v) => typeof v === "bigint" ? Number(v) : v),
+    );
+    res.json({ readRanges: sanitized });
+  } catch (e) {
+    console.error("[read-status] error:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// グループメンバー一覧取得
+app.get("/api/chat/:mid/members", async (req, res) => {
+  try {
+    assertClient();
+    const { mid } = req.params;
+    if (!mid.startsWith("c")) {
+      return res.status(400).json({ error: "Not a group chat" });
+    }
+    const chatResult = await lineClient.base.talk.getChat({
+      chatMid: mid,
+      withMembers: true,
+    });
+    const memberMids = chatResult?.memberMids ?? [];
+    const members = [];
+    if (memberMids.length > 0) {
+      const chunkSize = 50;
+      for (let i = 0; i < memberMids.length; i += chunkSize) {
+        const chunk = memberMids.slice(i, i + chunkSize);
+        const contacts = await lineClient.base.talk.getContacts({ mids: chunk });
+        for (const c of contacts ?? []) {
+          members.push(formatContact(c));
+        }
+      }
+    }
+    res.json({ members });
+  } catch (e) {
+    console.error("[members] error:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // --- Socket.io (auth flows + real-time messages) ---
 
 // listen() が E2EE エラーや接続切断で終了した場合に自動再起動するポーリングループ
@@ -769,6 +845,22 @@ async function listenWithRestart(client, signal) {
             console.error("[E2EE] decrypt error (skipping message):", e.message);
           }
           io.emit("chat:message", formatMessage(msg));
+        }
+        // 既読通知イベント
+        if (event.type === "NOTIFIED_READ_MESSAGE" || event.type === 55) {
+          // param1 = 読んだ人のMID, param2 = チャットのMID
+          const readerMid = event.param1 ? String(event.param1) : "";
+          const chatMid = event.param2 ? String(event.param2) : "";
+          if (readerMid && chatMid) {
+            io.emit("chat:read", { readerMid, chatMid });
+          }
+        }
+        // 自分が既読を送った場合 (SEND_CHAT_CHECKED / 40)
+        if (event.type === "SEND_CHAT_CHECKED" || event.type === 40) {
+          const chatMid = event.param1 ? String(event.param1) : "";
+          if (chatMid) {
+            io.emit("chat:read", { readerMid: String(client.base.profile?.mid ?? ""), chatMid });
+          }
         }
       }
       if (signal.aborted || lineClient !== client) break;

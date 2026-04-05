@@ -490,6 +490,120 @@ body.standalone-mode #fullscreen-btn {
   margin-top: 2px;
 }
 
+.msg-read {
+  font-size: 11px;
+  color: #06c755;
+  font-weight: bold;
+  display: inline-block;
+}
+
+.msg.outgoing .msg-meta {
+  display: -webkit-box;
+  display: -ms-flexbox;
+  display: flex;
+  -webkit-box-orient: vertical;
+  -webkit-box-direction: normal;
+  -ms-flex-direction: column;
+  flex-direction: column;
+  -webkit-box-align: end;
+  -ms-flex-align: end;
+  align-items: flex-end;
+}
+
+.msg.outgoing .msg-read-group {
+  cursor: pointer;
+}
+
+.msg.outgoing .msg-read-group:hover {
+  text-decoration: underline;
+}
+
+/* 既読者リストオーバーレイ */
+#read-overlay {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 1000;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+#read-overlay-inner {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  max-height: 60%;
+  background: #fff;
+  border-radius: 14px 14px 0 0;
+  padding: 0;
+  overflow: hidden;
+  -webkit-animation: readOverlaySlideUp 0.25s ease-out;
+  animation: readOverlaySlideUp 0.25s ease-out;
+}
+
+@-webkit-keyframes readOverlaySlideUp {
+  from { -webkit-transform: translateY(100%); transform: translateY(100%); }
+  to { -webkit-transform: translateY(0); transform: translateY(0); }
+}
+
+@keyframes readOverlaySlideUp {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
+}
+
+#read-overlay-header {
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid #e5e5e5;
+  font-weight: bold;
+  font-size: 15px;
+  color: #333;
+}
+
+#read-overlay-header .close-btn {
+  float: right;
+  border: none;
+  background: none;
+  font-size: 20px;
+  color: #999;
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+}
+
+#read-overlay-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  max-height: calc(60vh - 50px);
+}
+
+#read-overlay-list li {
+  padding: 10px 16px;
+  border-bottom: 1px solid #f0f0f0;
+  font-size: 14px;
+  color: #333;
+}
+
+#read-overlay-list li .reader-avatar {
+  float: left;
+  width: 36px;
+  height: 36px;
+  border-radius: 18px;
+  margin-right: 10px;
+  background: #d9d9d9;
+}
+
+#read-overlay-list li .reader-name {
+  line-height: 36px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 #send-form {
   position: absolute;
   right: 0;
