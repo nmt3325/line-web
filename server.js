@@ -763,6 +763,19 @@ app.post("/api/chat/:mid/send", async (req, res) => {
   }
 });
 
+// 送信取り消し
+app.post("/api/message/:messageId/unsend", async (req, res) => {
+  try {
+    assertClient();
+    const { messageId } = req.params;
+    await lineClient.base.talk.unsendMessage({ messageId, seq: 0 });
+    io.emit("chat:unsend", { messageId });
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // 既読情報取得
 app.get("/api/chat/:mid/read-status", async (req, res) => {
   try {
@@ -860,6 +873,13 @@ async function listenWithRestart(client, signal) {
           const chatMid = event.param1 ? String(event.param1) : "";
           if (chatMid) {
             io.emit("chat:read", { readerMid: String(client.base.profile?.mid ?? ""), chatMid });
+          }
+        }
+        // 送信取り消しイベント (DESTROY_MESSAGE / NOTIFIED_DESTROY_MESSAGE)
+        if (event.type === "DESTROY_MESSAGE" || event.type === "NOTIFIED_DESTROY_MESSAGE") {
+          const messageId = event.param2 ? String(event.param2) : "";
+          if (messageId) {
+            io.emit("chat:unsend", { messageId });
           }
         }
       }

@@ -223,6 +223,21 @@
       }
     });
 
+    socket.on("chat:unsend", function (data) {
+      if (!data || !data.messageId) return;
+      var msgId = String(data.messageId);
+      // キャッシュから削除
+      Object.keys(messageCache).forEach(function (chatMid) {
+        messageCache[chatMid] = messageCache[chatMid].filter(function (m) {
+          return String(m.id) !== msgId;
+        });
+      });
+      // DOMから削除
+      var el = messageListEl.querySelector('[data-id="' + msgId + '"]');
+      if (el) el.remove();
+      hideUnsendMenu();
+    });
+
     socket.on("chat:message", function (msg) {
       if (!msg) return;
 
@@ -870,7 +885,95 @@
     } else {
       li.appendChild(time);
     }
+
+    // 自分の送信メッセージに送信取り消しコンテキストメニューを追加
+    if (isOut && msgId) {
+      attachUnsendMenu(li, msgId);
+    }
+
     messageListEl.appendChild(li);
+  }
+
+  var unsendMenuEl = null;
+  var unsendMenuTargetId = null;
+  var unsendLongPressTimer = null;
+
+  function hideUnsendMenu() {
+    if (unsendMenuEl) {
+      unsendMenuEl.remove();
+      unsendMenuEl = null;
+    }
+    unsendMenuTargetId = null;
+  }
+
+  function showUnsendMenu(li, msgId) {
+    hideUnsendMenu();
+    unsendMenuTargetId = msgId;
+
+    var menu = document.createElement("div");
+    menu.className = "unsend-menu";
+    menu.setAttribute("role", "menu");
+
+    var btn = document.createElement("button");
+    btn.className = "unsend-menu-btn";
+    btn.textContent = "送信取り消し";
+    btn.setAttribute("role", "menuitem");
+    btn.onclick = function (e) {
+      e.stopPropagation();
+      doUnsend(msgId);
+    };
+    menu.appendChild(btn);
+
+    var cancelBtn = document.createElement("button");
+    cancelBtn.className = "unsend-menu-cancel";
+    cancelBtn.textContent = "キャンセル";
+    cancelBtn.setAttribute("role", "menuitem");
+    cancelBtn.onclick = function (e) {
+      e.stopPropagation();
+      hideUnsendMenu();
+    };
+    menu.appendChild(cancelBtn);
+
+    li.appendChild(menu);
+    unsendMenuEl = menu;
+
+    // メニュー外タップで閉じる
+    setTimeout(function () {
+      document.addEventListener("click", hideUnsendMenu, { once: true });
+    }, 0);
+  }
+
+  function attachUnsendMenu(li, msgId) {
+    var longPressTimer = null;
+
+    // 長押し (モバイル)
+    li.addEventListener("touchstart", function (e) {
+      longPressTimer = setTimeout(function () {
+        longPressTimer = null;
+        showUnsendMenu(li, msgId);
+      }, 600);
+    }, { passive: true });
+    li.addEventListener("touchend", function () {
+      if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+    });
+    li.addEventListener("touchmove", function () {
+      if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+    });
+
+    // 右クリック (デスクトップ)
+    li.addEventListener("contextmenu", function (e) {
+      e.preventDefault();
+      showUnsendMenu(li, msgId);
+    });
+  }
+
+  function doUnsend(msgId) {
+    hideUnsendMenu();
+    apiRequest("POST", "/api/message/" + encodeURIComponent(msgId) + "/unsend", null, function (status, data) {
+      if (status < 200 || status >= 300) {
+        alert("送信取り消しに失敗しました: " + ((data && data.error) || "不明なエラー"));
+      }
+    });
   }
 
   function showReadOverlay(msg, chatMid) {
