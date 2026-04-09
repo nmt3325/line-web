@@ -387,6 +387,7 @@ function formatMessage(msg) {
     contentMetadata: metadata,
     location,
     createdTime: msg.createdTime ? Number(msg.createdTime) : Date.now(),
+    relatedMessageId: msg.relatedMessageId ? msg.relatedMessageId.toString() : undefined,
   };
 }
 
@@ -555,28 +556,41 @@ app.get("/api/chat/:mid/messages", async (req, res) => {
     assertClient();
     const { mid } = req.params;
     const limit = Math.min(Number(req.query.limit ?? 30), 100);
+    const beforeMessageId = req.query.beforeMessageId;
+    const beforeDeliveredTime = req.query.beforeDeliveredTime;
 
     const boxes = await lineClient.base.talk.getMessageBoxes({
       messageBoxListRequest: {},
     });
     const box = boxes?.messageBoxes?.find((b) => b.id === mid);
-    if (!box) return res.json({ messages: [] });
+    if (!box) return res.json({ messages: [], hasMore: false });
 
-    // LINE の getPreviousMessagesV2WithRequest は endMessageId の型（BigInt vs Number）
-    // によって一部のチャットBOXで 0 件を返すことがある。
-    // Number(messageId)+1 が最も多くのBOXで成功するが、精度ロスで逆に取得できなくなる
-    // BOXもあるため、複数の方式をフォールバックで試行する。
-    const msgId = box.lastDeliveredMessageId.messageId;
-    const deliveredTime = box.lastDeliveredMessageId.deliveredTime;
-
-    const endMessageIdCandidates = [
-      // Strategy 1: Number(bigint)+1 — 精度ロスで丸められたIDが多くのBOXでヒットする
-      { messageId: Number(msgId) + 1, deliveredTime: Number(deliveredTime) + 1 },
-      // Strategy 2: 元の BigInt 値（一部のBOXではこれが正しい）
-      { messageId: msgId, deliveredTime },
-      // Strategy 3: BigInt + 1n（endMessageId が排他的な場合のフォールバック）
-      { messageId: typeof msgId === "bigint" ? msgId + 1n : msgId + 1, deliveredTime: deliveredTime + 1 },
-    ];
+    let endMessageIdCandidates;
+    if (beforeMessageId && beforeDeliveredTime) {
+      // ページネーション: クライアントが指定した最古メッセージIDを使用
+      const bId = BigInt(beforeMessageId);
+      const bTime = Number(beforeDeliveredTime);
+      endMessageIdCandidates = [
+        { messageId: bId, deliveredTime: bTime },
+        { messageId: Number(beforeMessageId), deliveredTime: bTime },
+        { messageId: bId + 1n, deliveredTime: bTime + 1 },
+      ];
+    } else {
+      // 初回ロード: LINE の getPreviousMessagesV2WithRequest は endMessageId の型（BigInt vs Number）
+      // によって一部のチャットBOXで 0 件を返すことがある。
+      // Number(messageId)+1 が最も多くのBOXで成功するが、精度ロスで逆に取得できなくなる
+      // BOXもあるため、複数の方式をフォールバックで試行する。
+      const msgId = box.lastDeliveredMessageId.messageId;
+      const deliveredTime = box.lastDeliveredMessageId.deliveredTime;
+      endMessageIdCandidates = [
+        // Strategy 1: Number(bigint)+1 — 精度ロスで丸められたIDが多くのBOXでヒットする
+        { messageId: Number(msgId) + 1, deliveredTime: Number(deliveredTime) + 1 },
+        // Strategy 2: 元の BigInt 値（一部のBOXではこれが正しい）
+        { messageId: msgId, deliveredTime },
+        // Strategy 3: BigInt + 1n（endMessageId が排他的な場合のフォールバック）
+        { messageId: typeof msgId === "bigint" ? msgId + 1n : msgId + 1, deliveredTime: deliveredTime + 1 },
+      ];
+    }
 
     let raw = null;
     for (const endMessageId of endMessageIdCandidates) {
@@ -619,7 +633,7 @@ app.get("/api/chat/:mid/messages", async (req, res) => {
     const messages = decrypted
       .map(formatMessage)
       .sort((a, b) => toEpochMs(a.createdTime) - toEpochMs(b.createdTime));
-    res.json({ messages });
+    res.json({ messages, hasMore: (raw ?? []).length === limit });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -813,15 +827,18 @@ app.post("/api/chat/:mid/send", async (req, res) => {
   try {
     assertClient();
     const { mid } = req.params;
-    const { text } = req.body;
+    const { text, relatedMessageId } = req.body;
     if (!text?.trim()) return res.status(400).json({ error: "text required" });
 
-    await lineClient.base.talk.sendMessage({
+    const sendOpts = {
       to: mid,
       text: text.trim(),
       contentType: "NONE",
       contentMetadata: {},
-    });
+    };
+    if (relatedMessageId) sendOpts.relatedMessageId = String(relatedMessageId);
+
+    await lineClient.base.talk.sendMessage(sendOpts);
     res.json({ success: true });
   } catch (e) {
     res.status(500).json({ error: e.message });

@@ -6,6 +6,12 @@
   var friends = [];
   var groups = [];
   var messageCache = {};
+  // mid -> { id, createdTime } of the oldest loaded message (for pagination)
+  var oldestMessageCache = {};
+  // mid -> bool — whether more messages may exist before the oldest loaded
+  var hasMoreMessages = {};
+  // prevents concurrent loadMore calls
+  var isLoadingMore = false;
   // mid -> { mid, name } for group sender display
   var contactCache = {};
   // chatMid -> { chatId, readers: { readerMid: lastReadMessageId }, ... }
@@ -150,6 +156,21 @@
     sendBtn.onkeydown = onComposeControlKeyDown;
     if (imageInput) imageInput.onchange = onImageSelected;
     if (videoInput) videoInput.onchange = onVideoSelected;
+    if (replyCancelBtn) replyCancelBtn.onclick = cancelReply;
+    if (messagesContainer) {
+      messagesContainer.onscroll = onMessagesScroll;
+    }
+  }
+
+  function onMessagesScroll() {
+    if (!selectedChat) return;
+    var mid = String(selectedChat.mid);
+    if (!hasMoreMessages[mid]) return;
+    if (isLoadingMore) return;
+    // 上端に近づいたら古いメッセージを読み込む（100px以内）
+    if (messagesContainer.scrollTop <= 100) {
+      loadMoreMessages(mid);
+    }
   }
 
   function bindViewportEvents() {
@@ -532,6 +553,7 @@
     var mid = chat && chat.mid ? String(chat.mid) : "";
     if (!mid) return;
 
+    cancelReply();
     selectedChat = chat;
     highlightActiveItem(mid);
 
@@ -545,6 +567,13 @@
 
     setMessageListMessage("メッセージを読み込み中...", false);
     scrollToBottom();
+
+    // チャット切り替え時にページネーション状態をリセット
+    isLoadingMore = false;
+    hasMoreMessages[mid] = false;
+    oldestMessageCache[mid] = null;
+    var indicator = document.getElementById("load-more-indicator");
+    if (indicator) indicator.style.display = "none";
 
     loadMessages(mid);
   }
@@ -567,7 +596,10 @@
         setMessageListMessage(data && data.error ? data.error : "メッセージ取得に失敗しました", true);
         return;
       }
-      messageCache[mid] = sortMessagesByCreatedTime(data && data.messages ? data.messages : []);
+      var msgs = sortMessagesByCreatedTime(data && data.messages ? data.messages : []);
+      messageCache[mid] = msgs;
+      hasMoreMessages[mid] = !!(data && data.hasMore);
+      oldestMessageCache[mid] = msgs.length > 0 ? msgs[0] : null;
       // 既読情報を取得してからメッセージを描画
       fetchReadStatus(mid, function () {
         renderMessages(mid);
@@ -577,6 +609,114 @@
         fetchGroupMembers(mid);
       }
     });
+  }
+
+  function loadMoreMessages(mid) {
+    if (isLoadingMore) return;
+    if (!hasMoreMessages[mid]) return;
+    var oldest = oldestMessageCache[mid];
+    if (!oldest) return;
+
+    isLoadingMore = true;
+    updateLoadMoreIndicator(mid, true);
+
+    var url = "/api/chat/" + encodeURIComponent(mid) + "/messages?limit=100"
+      + "&beforeMessageId=" + encodeURIComponent(oldest.id)
+      + "&beforeDeliveredTime=" + encodeURIComponent(oldest.createdTime);
+
+    apiRequest("GET", url, null, function (status, data) {
+      isLoadingMore = false;
+      if (!selectedChat || String(selectedChat.mid) !== String(mid)) return;
+
+      if (status < 200 || status >= 300) {
+        updateLoadMoreIndicator(mid, false);
+        return;
+      }
+
+      var newMsgs = sortMessagesByCreatedTime(data && data.messages ? data.messages : []);
+      hasMoreMessages[mid] = !!(data && data.hasMore);
+      if (newMsgs.length > 0) {
+        oldestMessageCache[mid] = newMsgs[0];
+      } else {
+        hasMoreMessages[mid] = false;
+      }
+
+      // スクロール位置を維持しながら先頭にメッセージを追加
+      var container = messagesContainer;
+      var prevScrollHeight = container.scrollHeight;
+
+      prependMessagesToList(mid, newMsgs);
+
+      // 追加後のscrollHeightの差分だけscrollTopを調整
+      var addedHeight = container.scrollHeight - prevScrollHeight;
+      container.scrollTop = container.scrollTop + addedHeight;
+
+      updateLoadMoreIndicator(mid, false);
+    });
+  }
+
+  function prependMessagesToList(mid, newMsgs) {
+    if (!newMsgs || newMsgs.length === 0) return;
+    var isGroup = selectedChat && selectedChat.isGroup;
+
+    // 既存の日付区切りも含めて先頭に挿入するため、フラグメントを使う
+    var frag = document.createDocumentFragment();
+    var firstExistingDateStr = getFirstDateStrInList();
+
+    // 新しいメッセージをグルーピングして日付区切りを挿入
+    var lastDateStr = null;
+    for (var i = 0; i < newMsgs.length; i += 1) {
+      var msg = newMsgs[i];
+      var msgDateStr = formatDateHeader(msg.createdTime);
+      if (lastDateStr !== msgDateStr) {
+        var dateDivider = document.createElement("li");
+        dateDivider.className = "date-divider";
+        var dateSpan = document.createElement("span");
+        dateSpan.textContent = msgDateStr;
+        dateDivider.appendChild(dateSpan);
+        frag.appendChild(dateDivider);
+        lastDateStr = msgDateStr;
+      }
+      var li = buildMessageEl(msg, isGroup);
+      if (li) frag.appendChild(li);
+    }
+
+    // 最後の新メッセージの日付と既存先頭メッセージの日付が同じなら既存の日付区切りを削除
+    if (lastDateStr && firstExistingDateStr && lastDateStr === firstExistingDateStr) {
+      var existing = messageListEl.querySelector(".date-divider");
+      if (existing) existing.parentNode.removeChild(existing);
+    }
+
+    // キャッシュにも追加してマージ
+    messageCache[mid] = sortMessagesByCreatedTime(newMsgs.concat(messageCache[mid] || []));
+
+    // フラグメントを先頭に挿入
+    if (messageListEl.firstChild) {
+      messageListEl.insertBefore(frag, messageListEl.firstChild);
+    } else {
+      messageListEl.appendChild(frag);
+    }
+  }
+
+  function getFirstDateStrInList() {
+    var items = messageListEl.querySelectorAll("li[data-id]");
+    if (!items || items.length === 0) return null;
+    var firstItem = items[0];
+    // data-time 属性からdateStrを得る
+    var t = firstItem.getAttribute("data-time");
+    if (!t) return null;
+    return formatDateHeader(Number(t));
+  }
+
+  function updateLoadMoreIndicator(mid, loading) {
+    var indicator = document.getElementById("load-more-indicator");
+    if (!indicator) return;
+    if (!hasMoreMessages[mid] && !loading) {
+      indicator.style.display = "none";
+    } else {
+      indicator.style.display = "";
+      indicator.textContent = loading ? "読み込み中..." : "";
+    }
   }
 
   function fetchReadStatus(mid, callback) {
@@ -696,6 +836,17 @@
     messageCache[mid] = messages;
 
     clearNode(messageListEl);
+
+    // hasMoreMessages が true の場合はインジケーターを表示
+    var indicator = document.getElementById("load-more-indicator");
+    if (indicator) {
+      if (hasMoreMessages[mid]) {
+        indicator.style.display = "";
+        indicator.textContent = "";
+      } else {
+        indicator.style.display = "none";
+      }
+    }
 
     if (messages.length === 0) {
       setMessageListMessage("メッセージがありません", false);
@@ -823,6 +974,11 @@
   }
 
   function appendMessageEl(msg, isGroup) {
+    var li = buildMessageEl(msg, isGroup);
+    if (li) messageListEl.appendChild(li);
+  }
+
+  function buildMessageEl(msg, isGroup) {
     var li = document.createElement("li");
     var bubble = document.createElement("div");
     var time = document.createElement("div");
@@ -832,6 +988,7 @@
 
     li.className = "msg " + (isOut ? "outgoing" : "incoming");
     li.setAttribute("data-id", msgId);
+    if (msg && msg.createdTime) li.setAttribute("data-time", String(msg.createdTime));
 
     // グループチャットで受信メッセージの場合、送信者名を表示
     if (isGroup && !isOut && fromValue) {
@@ -839,6 +996,12 @@
       sender.className = "msg-sender";
       sender.textContent = getSenderName(fromValue);
       li.appendChild(sender);
+    }
+
+    // 返信引用表示（バブルの前に追加）
+    var relatedId = msg && msg.relatedMessageId ? String(msg.relatedMessageId) : "";
+    if (relatedId) {
+      li.appendChild(buildReplyQuote(relatedId));
     }
 
     if (isImageMessage(msg) && msgId) {
@@ -980,17 +1143,95 @@
       li.appendChild(time);
     }
 
-    // 自分の送信メッセージに送信取り消しコンテキストメニューを追加
-    if (isOut && msgId) {
-      attachUnsendMenu(li, msgId);
+    // コンテキストメニュー（全メッセージ：返信、自分のメッセージのみ：送信取り消しも）
+    if (msgId) {
+      attachMessageMenu(li, msgId, msg, !!isOut);
     }
 
-    messageListEl.appendChild(li);
+    return li;
   }
 
   var unsendMenuEl = null;
   var unsendMenuTargetId = null;
   var unsendLongPressTimer = null;
+
+  // 返信状態
+  var replyTargetMsg = null;
+  var replyPreviewEl = document.getElementById("reply-preview");
+  var replyPreviewTextEl = document.getElementById("reply-preview-text");
+  var replyCancelBtn = document.getElementById("reply-cancel-btn");
+
+  function buildReplyQuote(relatedMsgId) {
+    var quoteEl = document.createElement("div");
+    quoteEl.className = "msg-reply-quote";
+
+    // キャッシュから元メッセージを探す
+    var originalMsg = null;
+    if (selectedChat && selectedChat.mid) {
+      var msgs = messageCache[String(selectedChat.mid)] || [];
+      for (var i = 0; i < msgs.length; i += 1) {
+        if (msgs[i] && String(msgs[i].id) === relatedMsgId) {
+          originalMsg = msgs[i];
+          break;
+        }
+      }
+    }
+
+    if (originalMsg) {
+      var preview = getMessagePreviewText(originalMsg);
+      var fromMid = originalMsg.from ? String(originalMsg.from) : "";
+      var senderName = fromMid ? getSenderName(fromMid) : "";
+      quoteEl.textContent = (senderName ? senderName + ": " : "") + preview;
+    } else {
+      quoteEl.textContent = "返信元メッセージ";
+    }
+
+    // クリックで元メッセージへスクロール
+    quoteEl.onclick = (function (id) {
+      return function (e) {
+        e.stopPropagation();
+        var target = messageListEl.querySelector('[data-id="' + id + '"]');
+        if (target && target.scrollIntoView) {
+          target.scrollIntoView({ behavior: "smooth", block: "center" });
+        }
+      };
+    })(relatedMsgId);
+
+    return quoteEl;
+  }
+
+  function setReplyTarget(msg) {
+    replyTargetMsg = msg;
+    if (!msg) {
+      if (replyPreviewEl) addClass(replyPreviewEl, "hidden");
+      if (messagesContainer) messagesContainer.style.bottom = "64px";
+      return;
+    }
+    var preview = getMessagePreviewText(msg);
+    if (replyPreviewTextEl) replyPreviewTextEl.textContent = "返信: " + preview;
+    if (replyPreviewEl) {
+      removeClass(replyPreviewEl, "hidden");
+      var previewH = replyPreviewEl.offsetHeight || 40;
+      if (messagesContainer) messagesContainer.style.bottom = (64 + previewH) + "px";
+    }
+    if (messageInput) messageInput.focus();
+  }
+
+  function cancelReply() {
+    setReplyTarget(null);
+  }
+
+  function getMessagePreviewText(msg) {
+    if (!msg) return "";
+    if (isImageMessage(msg)) return "[画像]";
+    if (isVideoMessage(msg)) return "[動画]";
+    if (isStickerMessage(msg)) return "[スタンプ]";
+    if (isAudioMessage(msg)) return "[音声]";
+    if (isFileMessage(msg)) return "[ファイル]";
+    if (isLocationMessage(msg)) return "[位置情報]";
+    if (msg.text) return String(msg.text).slice(0, 60);
+    return getContentTypeLabel(msg);
+  }
 
   function hideUnsendMenu() {
     if (unsendMenuEl) {
@@ -1000,7 +1241,7 @@
     unsendMenuTargetId = null;
   }
 
-  function showUnsendMenu(li, msgId) {
+  function showUnsendMenu(li, msgId, msg, isOut) {
     hideUnsendMenu();
     unsendMenuTargetId = msgId;
 
@@ -1008,15 +1249,34 @@
     menu.className = "unsend-menu";
     menu.setAttribute("role", "menu");
 
-    var btn = document.createElement("button");
-    btn.className = "unsend-menu-btn";
-    btn.textContent = "送信取り消し";
-    btn.setAttribute("role", "menuitem");
-    btn.onclick = function (e) {
-      e.stopPropagation();
-      doUnsend(msgId);
-    };
-    menu.appendChild(btn);
+    // 返信ボタン（全メッセージ）
+    if (msg) {
+      var replyBtn = document.createElement("button");
+      replyBtn.className = "reply-menu-btn";
+      replyBtn.textContent = "返信";
+      replyBtn.setAttribute("role", "menuitem");
+      replyBtn.onclick = (function (m) {
+        return function (e) {
+          e.stopPropagation();
+          hideUnsendMenu();
+          setReplyTarget(m);
+        };
+      })(msg);
+      menu.appendChild(replyBtn);
+    }
+
+    // 送信取り消しボタン（自分のメッセージのみ）
+    if (isOut) {
+      var btn = document.createElement("button");
+      btn.className = "unsend-menu-btn";
+      btn.textContent = "送信取り消し";
+      btn.setAttribute("role", "menuitem");
+      btn.onclick = function (e) {
+        e.stopPropagation();
+        doUnsend(msgId);
+      };
+      menu.appendChild(btn);
+    }
 
     var cancelBtn = document.createElement("button");
     cancelBtn.className = "unsend-menu-cancel";
@@ -1061,14 +1321,14 @@
     }, 0);
   }
 
-  function attachUnsendMenu(li, msgId) {
+  function attachMessageMenu(li, msgId, msg, isOut) {
     var longPressTimer = null;
 
     // 長押し (モバイル)
     li.addEventListener("touchstart", function (e) {
       longPressTimer = setTimeout(function () {
         longPressTimer = null;
-        showUnsendMenu(li, msgId);
+        showUnsendMenu(li, msgId, msg, isOut);
       }, 600);
     }, { passive: true });
     li.addEventListener("touchend", function () {
@@ -1081,7 +1341,7 @@
     // 右クリック (デスクトップ)
     li.addEventListener("contextmenu", function (e) {
       e.preventDefault();
-      showUnsendMenu(li, msgId);
+      showUnsendMenu(li, msgId, msg, isOut);
     });
   }
 
@@ -1445,6 +1705,7 @@
     if (!text) return;
 
     var toMid = String(selectedChat.mid);
+    var replyId = replyTargetMsg && replyTargetMsg.id ? String(replyTargetMsg.id) : null;
     var disableInputDuringSend = !isLegacyIOS6Browser;
     sendBtn.disabled = true;
     if (imageAttachBtn) imageAttachBtn.disabled = true;
@@ -1453,7 +1714,10 @@
       messageInput.disabled = true;
     }
 
-    apiRequest("POST", "/api/chat/" + encodeURIComponent(toMid) + "/send", { text: text }, function (status, data) {
+    var payload = { text: text };
+    if (replyId) payload.relatedMessageId = replyId;
+
+    apiRequest("POST", "/api/chat/" + encodeURIComponent(toMid) + "/send", payload, function (status, data) {
       if (status < 200 || status >= 300) {
         var errorMessage = data && data.error ? data.error : "送信に失敗しました";
         window.alert("送信に失敗しました: " + errorMessage);
@@ -1475,6 +1739,7 @@
         text: text,
         createdTime: now
       };
+      if (replyId) msg.relatedMessageId = replyId;
 
       cacheMessage(toMid, msg);
       updateChatLastMessageTime(toMid, now);
@@ -1485,6 +1750,7 @@
 
       messageInput.value = "";
       adjustTextarea();
+      cancelReply();
       sendBtn.disabled = false;
       if (imageAttachBtn) imageAttachBtn.disabled = false;
       if (videoAttachBtn) videoAttachBtn.disabled = false;

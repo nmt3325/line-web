@@ -96,7 +96,14 @@
         <span id="chat-name"></span>
       </div>
       <div id="messages-container">
+        <div id="load-more-indicator" style="display:none;text-align:center;padding:8px;color:#888;font-size:13px;"></div>
         <ul id="message-list"></ul>
+      </div>
+      <div id="reply-preview" class="hidden">
+        <div id="reply-preview-content">
+          <div id="reply-preview-text"></div>
+        </div>
+        <button type="button" id="reply-cancel-btn" aria-label="返信キャンセル">×</button>
       </div>
       <form id="send-form">
         <button type="button" class="btn-img-attach" id="image-attach-btn" title="画像を送信" aria-label="画像を送信">
