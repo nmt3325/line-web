@@ -740,6 +740,47 @@ body.standalone-mode #fullscreen-btn {
   background: #000;
 }
 
+.msg-audio {
+  display: block;
+  width: 240px;
+  max-width: 100%;
+}
+
+.msg-bubble.is-audio {
+  padding: 6px;
+  background: transparent;
+}
+
+.msg-file-link {
+  display: block;
+  color: inherit;
+  text-decoration: underline;
+  word-break: break-all;
+}
+
+.msg-bubble.is-file {
+  padding: 8px 12px;
+}
+
+.msg-location-link {
+  display: block;
+  color: inherit;
+  text-decoration: underline;
+  white-space: pre-line;
+  word-break: break-all;
+}
+
+.msg-bubble.is-location {
+  padding: 8px 12px;
+}
+
+.msg-bubble.msg-unsent-notice {
+  color: #888;
+  font-style: italic;
+  background: transparent;
+  border: 1px dashed #ccc;
+}
+
 .loading {
   text-align: center;
   color: #666;
@@ -798,7 +839,6 @@ body.standalone-mode #fullscreen-btn {
 
 /* 送信取り消しコンテキストメニュー */
 .unsend-menu {
-  position: relative;
   display: -webkit-box;
   display: -ms-flexbox;
   display: flex;
@@ -811,9 +851,7 @@ body.standalone-mode #fullscreen-btn {
   border-radius: 8px;
   box-shadow: 0 4px 16px rgba(0,0,0,0.18);
   overflow: hidden;
-  margin-top: 4px;
   min-width: 140px;
-  z-index: 200;
 }
 
 .unsend-menu-btn,

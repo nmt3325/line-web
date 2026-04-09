@@ -730,6 +730,13 @@
     return String(fromMid).slice(0, 8) + "...";
   }
 
+  function formatFileSize(bytes) {
+    if (!bytes || bytes <= 0) return "";
+    if (bytes < 1024) return bytes + " B";
+    if (bytes < 1024 * 1024) return Math.round(bytes / 1024) + " KB";
+    return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+  }
+
   function isImageMessage(msg) {
     var ct = msg && msg.contentType;
     return ct === 1 || ct === "IMAGE" || ct === "1";
@@ -743,6 +750,46 @@
   function isVideoMessage(msg) {
     var ct = msg && msg.contentType;
     return ct === 2 || ct === "VIDEO" || ct === "2";
+  }
+
+  function isAudioMessage(msg) {
+    var ct = msg && msg.contentType;
+    return ct === 3 || ct === "AUDIO" || ct === "3";
+  }
+
+  function isFileMessage(msg) {
+    var ct = msg && msg.contentType;
+    return ct === 14 || ct === "FILE" || ct === "14";
+  }
+
+  function isLocationMessage(msg) {
+    var ct = msg && msg.contentType;
+    return ct === 15 || ct === "LOCATION" || ct === "15";
+  }
+
+  function getContentTypeLabel(msg) {
+    var ct = msg && msg.contentType;
+    var meta = (msg && msg.contentMetadata) || {};
+    if (ct === 6 || ct === "CALL" || ct === "6") return "[通話]";
+    if (ct === 13 || ct === "CONTACT" || ct === "13") {
+      var name = meta.displayName || meta.MID || "";
+      return name ? "[連絡先: " + name + "]" : "[連絡先]";
+    }
+    if (ct === 12 || ct === "LINK" || ct === "12") return "[リンク]";
+    if (ct === 18 || ct === "CHATEVENT" || ct === "18") return "[システムメッセージ]";
+    if (ct === 5 || ct === "PDF" || ct === "5") return "[PDF]";
+    if (ct === 4 || ct === "HTML" || ct === "4") return "[HTML]";
+    if (ct === 8 || ct === "PRESENCE" || ct === "8") return "[プレゼンス更新]";
+    if (ct === 9 || ct === "GIFT" || ct === "9") return "[ギフト]";
+    if (ct === 10 || ct === "GROUPBOARD" || ct === "10") return "[グループボード]";
+    if (ct === 11 || ct === "APPLINK" || ct === "11") return "[アプリリンク]";
+    if (ct === 16 || ct === "POSTNOTIFICATION" || ct === "16") return "[通知]";
+    if (ct === 17 || ct === "RICH" || ct === "17") return "[リッチメッセージ]";
+    if (ct === 19 || ct === "MUSIC" || ct === "19") return "[音楽]";
+    if (ct === 20 || ct === "PAYMENT" || ct === "20") return "[支払い]";
+    if (ct === 21 || ct === "EXTIMAGE" || ct === "21") return "[画像]";
+    if (ct === 22 || ct === "FLEX" || ct === "22") return "[Flexメッセージ]";
+    return "[メディア]";
   }
 
   function getStickerPreviewUrl(msg) {
@@ -841,9 +888,56 @@
         bubble.className = "msg-bubble";
         bubble.textContent = "[スタンプ]";
       }
+    } else if (isAudioMessage(msg) && msgId) {
+      bubble.className = "msg-bubble is-audio";
+      var audioEl = document.createElement("audio");
+      audioEl.className = "msg-audio";
+      audioEl.src = "/api/message/" + encodeURIComponent(msgId) + "/audio";
+      audioEl.controls = true;
+      audioEl.preload = "metadata";
+      bubble.appendChild(audioEl);
+    } else if (isFileMessage(msg) && msgId) {
+      bubble.className = "msg-bubble is-file";
+      var meta = (msg && msg.contentMetadata) || {};
+      var fileName = meta.FILE_NAME || "ファイル";
+      var fileSize = meta.FILE_SIZE ? " (" + formatFileSize(Number(meta.FILE_SIZE)) + ")" : "";
+      var fileLink = document.createElement("a");
+      fileLink.href = "/api/message/" + encodeURIComponent(msgId) + "/file?name=" + encodeURIComponent(fileName);
+      fileLink.textContent = "📎 " + fileName + fileSize;
+      fileLink.download = fileName;
+      fileLink.className = "msg-file-link";
+      bubble.appendChild(fileLink);
+    } else if (isLocationMessage(msg)) {
+      bubble.className = "msg-bubble is-location";
+      var loc = msg && msg.location;
+      var locTitle = (loc && loc.title) || "";
+      var locAddr = (loc && loc.address) || "";
+      var locText = locTitle || locAddr || "[位置情報]";
+      if (locTitle && locAddr && locTitle !== locAddr) locText = locTitle + "\n" + locAddr;
+      if (loc && loc.latitude != null && loc.longitude != null) {
+        var locLink = document.createElement("a");
+        locLink.href = "https://maps.google.com/maps?q=" + loc.latitude + "," + loc.longitude;
+        locLink.target = "_blank";
+        locLink.rel = "noopener noreferrer";
+        locLink.textContent = "📍 " + locText;
+        locLink.className = "msg-location-link";
+        bubble.appendChild(locLink);
+      } else {
+        bubble.textContent = "📍 " + locText;
+      }
     } else {
-      bubble.className = "msg-bubble";
-      bubble.textContent = msg && msg.text ? String(msg.text) : "[メディア]";
+      var isUnsent = msg && msg.contentMetadata && msg.contentMetadata.UNSENT === "true";
+      if (isUnsent) {
+        bubble.className = "msg-bubble msg-unsent-notice";
+        bubble.textContent = "メッセージが取り消されました";
+      } else {
+        bubble.className = "msg-bubble";
+        if (msg && msg.text) {
+          bubble.textContent = String(msg.text);
+        } else {
+          bubble.textContent = getContentTypeLabel(msg);
+        }
+      }
     }
 
     time.className = "msg-time";
@@ -934,8 +1028,32 @@
     };
     menu.appendChild(cancelBtn);
 
-    li.appendChild(menu);
+    // position:fixed でオーバーフロークリップを回避
+    menu.style.position = "fixed";
+    menu.style.zIndex = "500";
+    document.body.appendChild(menu);
     unsendMenuEl = menu;
+
+    // li の位置を基準に表示位置を決定
+    var rect = li.getBoundingClientRect();
+    var menuH = menu.offsetHeight || 100;
+    var menuW = menu.offsetWidth || 140;
+    var winH = window.innerHeight;
+    var winW = window.innerWidth;
+
+    // 下に収まるなら下、収まらなければ上に開く
+    var top;
+    if (rect.bottom + menuH + 4 <= winH) {
+      top = rect.bottom + 4;
+    } else {
+      top = Math.max(rect.top - menuH - 4, 4);
+    }
+    // 右端がはみ出ないよう調整
+    var left = Math.min(rect.right - menuW, winW - menuW - 8);
+    left = Math.max(left, 8);
+
+    menu.style.top = top + "px";
+    menu.style.left = left + "px";
 
     // メニュー外タップで閉じる
     setTimeout(function () {

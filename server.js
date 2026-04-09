@@ -71,9 +71,22 @@ function isVideoContentType(contentType) {
   return normalized === "2" || normalized === "VIDEO";
 }
 
+function isAudioContentType(contentType) {
+  const normalized = normalizeContentType(contentType);
+  return normalized === "3" || normalized === "AUDIO";
+}
+
+function isFileContentType(contentType) {
+  const normalized = normalizeContentType(contentType);
+  return normalized === "14" || normalized === "FILE";
+}
+
 function shouldCacheRawMediaMessage(msg) {
   if (!msg || typeof msg !== "object") return false;
-  return isImageContentType(msg.contentType) || isVideoContentType(msg.contentType);
+  return isImageContentType(msg.contentType)
+    || isVideoContentType(msg.contentType)
+    || isAudioContentType(msg.contentType)
+    || isFileContentType(msg.contentType);
 }
 
 function guessMediaMimeType(fileName, fallback = "application/octet-stream") {
@@ -356,6 +369,15 @@ function formatMessage(msg) {
       Object.entries(msg.contentMetadata).map(([k, v]) => [k, v == null ? "" : String(v)]),
     )
     : {};
+  const loc = msg?.location;
+  const location = loc
+    ? {
+        title: loc.title ? String(loc.title) : "",
+        address: loc.address ? String(loc.address) : "",
+        latitude: loc.latitude != null ? Number(loc.latitude) : null,
+        longitude: loc.longitude != null ? Number(loc.longitude) : null,
+      }
+    : null;
   return {
     id: msg.id?.toString() ?? "",
     from: msg._from?.toString() ?? msg.from?.toString() ?? "",
@@ -363,6 +385,7 @@ function formatMessage(msg) {
     text: msg.text ?? "",
     contentType: msg.contentType ?? "NONE",
     contentMetadata: metadata,
+    location,
     createdTime: msg.createdTime ? Number(msg.createdTime) : Date.now(),
   };
 }
@@ -641,6 +664,48 @@ app.get("/api/message/:messageId/video", async (req, res) => {
 
     if (!file) return res.status(404).json({ error: "Video not found" });
     await sendBlobWithRangeSupport(req, res, file, "video/mp4");
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Download audio
+app.get("/api/message/:messageId/audio", async (req, res) => {
+  try {
+    assertClient();
+    const { messageId } = req.params;
+    const rawMsg = rawMessageCache.get(messageId);
+    const file = await downloadMessageMedia({
+      messageId,
+      isPreview: false,
+      rawMsg,
+      fallbackMimeType: "audio/mp4",
+      logPrefix: "audio",
+    });
+    if (!file) return res.status(404).json({ error: "Audio not found" });
+    await sendBlobWithRangeSupport(req, res, file, file.type || "audio/mp4");
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Download file
+app.get("/api/message/:messageId/file", async (req, res) => {
+  try {
+    assertClient();
+    const { messageId } = req.params;
+    const rawMsg = rawMessageCache.get(messageId);
+    const file = await downloadMessageMedia({
+      messageId,
+      isPreview: false,
+      rawMsg,
+      fallbackMimeType: "application/octet-stream",
+      logPrefix: "file",
+    });
+    if (!file) return res.status(404).json({ error: "File not found" });
+    const fileName = req.query.name ? String(req.query.name) : "file";
+    res.set("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`);
+    await sendBlobWithRangeSupport(req, res, file, file.type || "application/octet-stream");
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
