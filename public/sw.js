@@ -1,4 +1,4 @@
-const STATIC_CACHE = "line-web-static-v4";
+const STATIC_CACHE = "line-web-static-v5";
 const APP_SHELL = [
   "/",
   "/index.html",
@@ -41,6 +41,30 @@ self.addEventListener("activate", (event) => {
     ),
   );
   self.clients.claim();
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const chatMid = event.notification.tag;
+
+  event.waitUntil(
+    self.clients
+      .matchAll({ type: "window", includeUncontrolled: true })
+      .then((clientList) => {
+        for (const client of clientList) {
+          if ("focus" in client) {
+            client.focus();
+            if (chatMid) {
+              client.postMessage({ type: "open-chat", chatMid: chatMid });
+            }
+            return;
+          }
+        }
+        if (self.clients.openWindow) {
+          return self.clients.openWindow("/");
+        }
+      }),
+  );
 });
 
 self.addEventListener("fetch", (event) => {

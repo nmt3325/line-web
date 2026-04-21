@@ -202,6 +202,7 @@
       fetchProfile();
       loadFriends();
       loadGroups();
+      requestNotificationPermission();
     });
 
     socket.on("auth:pincode", function (payload) {
@@ -284,6 +285,12 @@
 
       if (selectedChat && String(selectedChat.mid) === chatMid) {
         renderMessages(chatMid);
+      }
+
+      var isDocHidden = typeof document.hidden !== "undefined" ? document.hidden : false;
+      var isOtherChat = !selectedChat || String(selectedChat.mid) !== chatMid;
+      if (isDocHidden || isOtherChat) {
+        showMessageNotification(msg, chatMid);
       }
     });
   }
@@ -1854,6 +1861,14 @@
         console.warn("[sw] registration failed:", error);
       });
     });
+
+    navigator.serviceWorker.addEventListener("message", function (event) {
+      if (!event.data || event.data.type !== "open-chat") return;
+      var chatMid = event.data.chatMid;
+      if (!chatMid) return;
+      var chat = findChatByMid(chatMid);
+      if (chat) openChat(chat);
+    });
   }
 
   function setStatus(msg, type) {
@@ -2007,6 +2022,70 @@
   function pad2(num) { return num < 10 ? "0" + num : String(num); }
 
   function trim(value) { return String(value || "").replace(/^\s+|\s+$/g, ""); }
+
+  function requestNotificationPermission() {
+    if (isLegacyIOS6Browser) return;
+    if (!("Notification" in window)) return;
+    if (Notification.permission === "default") {
+      Notification.requestPermission();
+    }
+  }
+
+  function getMessagePreview(msg) {
+    var ct = msg && msg.contentType;
+    if (ct === 1 || ct === "IMAGE" || ct === "1") return "[画像]";
+    if (ct === 2 || ct === "VIDEO" || ct === "2") return "[動画]";
+    if (ct === 3 || ct === "AUDIO" || ct === "3") return "[音声]";
+    if (ct === 7 || ct === "STICKER" || ct === "7") return "[スタンプ]";
+    if (ct === 4 || ct === "LOCATION" || ct === "4") return "[位置情報]";
+    var text = msg && msg.text ? String(msg.text) : "";
+    return text.slice(0, 100) || "[メッセージ]";
+  }
+
+  function findChatByMid(mid) {
+    var midStr = String(mid);
+    var i;
+    for (i = 0; i < friends.length; i += 1) {
+      if (friends[i] && String(friends[i].mid) === midStr) {
+        return { mid: friends[i].mid, name: friends[i].name, avatarUrl: friends[i].avatarUrl, isGroup: false };
+      }
+    }
+    for (i = 0; i < groups.length; i += 1) {
+      if (groups[i] && String(groups[i].mid) === midStr) {
+        return { mid: groups[i].mid, name: groups[i].name, avatarUrl: groups[i].avatarUrl, isGroup: true };
+      }
+    }
+    return null;
+  }
+
+  function showMessageNotification(msg, chatMid) {
+    if (isLegacyIOS6Browser) return;
+    if (!("Notification" in window)) return;
+    if (Notification.permission !== "granted") return;
+
+    var fromStr = msg && msg.from ? String(msg.from) : "";
+    var senderName = getSenderName(fromStr) || "LINE";
+    var isGroup = chatMid && String(chatMid).charAt(0) === "c";
+    var chatObj = findChatByMid(chatMid);
+    var chatDisplayName = chatObj && chatObj.name ? chatObj.name : senderName;
+
+    var title = isGroup ? chatDisplayName : senderName;
+    var preview = getMessagePreview(msg);
+    var body = isGroup ? (senderName + ": " + preview) : preview;
+
+    var n = new Notification(title, {
+      body: body,
+      icon: "/icons/app-icon-192.png",
+      tag: String(chatMid),
+      renotify: true
+    });
+
+    n.onclick = function () {
+      window.focus();
+      if (chatObj) openChat(chatObj);
+      n.close();
+    };
+  }
 
   function detectLegacyIOS6Browser() {
     var nav = window.navigator || {};
