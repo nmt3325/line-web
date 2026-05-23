@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "@evex/linejs": "npm:@jsr/evex__linejs@^2.3.7",
+    "better-sqlite3": "^12.10.0",
     "express": "^4.19.2",
     "qrcode": "^1.5.4",
     "socket.io": "^4.7.5",

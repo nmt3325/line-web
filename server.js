@@ -8,6 +8,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { writeFile } from "fs/promises";
 import { SafeJsonFileStorage } from "./safe-storage.js";
+import { MessageStore } from "./message-store.js";
 
 // LINE のプッシュ通知（メッセージ受信ポーリング）は HTTP/2 が必要
 setGlobalDispatcher(new Agent({ allowH2: true }));
@@ -22,6 +23,7 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
 
 let storage = new SafeJsonFileStorage("./line-storage.json");
+const messageStore = new MessageStore("./messages.db");
 const LINE_PROFILE_CDN = "https://profile.line-scdn.net";
 
 // Cache raw (pre-decryption) media messages so we can download E2EE media later
@@ -391,6 +393,14 @@ function formatMessage(msg) {
   };
 }
 
+function getChatMidFromMessage(msg, myMid) {
+  const to = msg.to ? String(msg.to) : "";
+  const from = msg.from ? String(msg.from) : "";
+  if (to.startsWith("c")) return to;
+  const isOutgoing = myMid && from === String(myMid);
+  return isOutgoing ? to : from;
+}
+
 function toEpochMs(value) {
   if (value === null || value === undefined) return 0;
   if (typeof value === "number") return Number.isFinite(value) && value > 0 ? value : 0;
@@ -550,6 +560,83 @@ app.get("/api/friends", async (_req, res) => {
   }
 });
 
+// LINE API からメッセージを取得してDBに保存し、フォーマット済みメッセージを返す
+async function fetchAndStoreMessages(mid, box, limit, beforeMessageId, beforeDeliveredTime) {
+  let endMessageIdCandidates;
+  if (beforeMessageId && beforeDeliveredTime) {
+    // ページネーション: クライアントが指定した最古メッセージIDを使用
+    const bId = BigInt(beforeMessageId);
+    const bTime = Number(beforeDeliveredTime);
+    endMessageIdCandidates = [
+      { messageId: bId, deliveredTime: bTime },
+      { messageId: Number(beforeMessageId), deliveredTime: bTime },
+      { messageId: bId + 1n, deliveredTime: bTime + 1 },
+    ];
+  } else {
+    // 初回ロード: LINE の getPreviousMessagesV2WithRequest は endMessageId の型（BigInt vs Number）
+    // によって一部のチャットBOXで 0 件を返すことがある。
+    // Number(messageId)+1 が最も多くのBOXで成功するが、精度ロスで逆に取得できなくなる
+    // BOXもあるため、複数の方式をフォールバックで試行する。
+    const msgId = box.lastDeliveredMessageId.messageId;
+    const deliveredTime = box.lastDeliveredMessageId.deliveredTime;
+    endMessageIdCandidates = [
+      // Strategy 1: Number(bigint)+1 — 精度ロスで丸められたIDが多くのBOXでヒットする
+      { messageId: Number(msgId) + 1, deliveredTime: Number(deliveredTime) + 1 },
+      // Strategy 2: 元の BigInt 値（一部のBOXではこれが正しい）
+      { messageId: msgId, deliveredTime },
+      // Strategy 3: BigInt + 1n（endMessageId が排他的な場合のフォールバック）
+      { messageId: typeof msgId === "bigint" ? msgId + 1n : msgId + 1, deliveredTime: deliveredTime + 1 },
+    ];
+  }
+
+  let raw = null;
+  for (const endMessageId of endMessageIdCandidates) {
+    try {
+      const result = await lineClient.base.talk.getPreviousMessagesV2WithRequest({
+        request: {
+          messageBoxId: box.id,
+          endMessageId,
+          messagesCount: limit,
+        },
+      });
+      if ((result ?? []).length > 0) {
+        raw = result;
+        break;
+      }
+      if (!raw) raw = result;
+    } catch {
+      // 型エラー等は無視して次を試行
+    }
+  }
+
+  // E2EE メッセージを復号する（media メッセージは復号前にキャッシュ）
+  const decrypted = await Promise.all(
+    (raw ?? []).map(async (msg) => {
+      if (shouldCacheRawMediaMessage(msg)) {
+        cacheRawMessage(msg);
+      }
+      if (msg.contentMetadata?.e2eeVersion) {
+        try {
+          return await lineClient.base.e2ee.decryptE2EEMessage(msg);
+        } catch {
+          return msg;
+        }
+      }
+      return msg;
+    }),
+  );
+
+  const messages = decrypted
+    .map(formatMessage)
+    .sort((a, b) => toEpochMs(a.createdTime) - toEpochMs(b.createdTime));
+
+  if (messages.length > 0) {
+    messageStore.saveBatch(mid, messages);
+  }
+
+  return { messages, hasMore: (raw ?? []).length === limit };
+}
+
 // Get messages for a chat (user or group mid)
 app.get("/api/chat/:mid/messages", async (req, res) => {
   try {
@@ -559,81 +646,33 @@ app.get("/api/chat/:mid/messages", async (req, res) => {
     const beforeMessageId = req.query.beforeMessageId;
     const beforeDeliveredTime = req.query.beforeDeliveredTime;
 
+    // ページネーション: DBに該当範囲のメッセージがあればそれを返す
+    if (beforeMessageId && beforeDeliveredTime) {
+      const cached = messageStore.getMessages(mid, {
+        limit,
+        beforeCreatedTime: Number(beforeDeliveredTime),
+        beforeId: beforeMessageId,
+      });
+      if (cached.messages.length > 0) {
+        return res.json(cached);
+      }
+    }
+
+    // 初回読み込み: DBにメッセージがあればそれを返す
+    if (!beforeMessageId && messageStore.hasMessages(mid)) {
+      const cached = messageStore.getMessages(mid, { limit });
+      return res.json(cached);
+    }
+
+    // DBにない場合は LINE API から取得して保存
     const boxes = await lineClient.base.talk.getMessageBoxes({
       messageBoxListRequest: {},
     });
     const box = boxes?.messageBoxes?.find((b) => b.id === mid);
     if (!box) return res.json({ messages: [], hasMore: false });
 
-    let endMessageIdCandidates;
-    if (beforeMessageId && beforeDeliveredTime) {
-      // ページネーション: クライアントが指定した最古メッセージIDを使用
-      const bId = BigInt(beforeMessageId);
-      const bTime = Number(beforeDeliveredTime);
-      endMessageIdCandidates = [
-        { messageId: bId, deliveredTime: bTime },
-        { messageId: Number(beforeMessageId), deliveredTime: bTime },
-        { messageId: bId + 1n, deliveredTime: bTime + 1 },
-      ];
-    } else {
-      // 初回ロード: LINE の getPreviousMessagesV2WithRequest は endMessageId の型（BigInt vs Number）
-      // によって一部のチャットBOXで 0 件を返すことがある。
-      // Number(messageId)+1 が最も多くのBOXで成功するが、精度ロスで逆に取得できなくなる
-      // BOXもあるため、複数の方式をフォールバックで試行する。
-      const msgId = box.lastDeliveredMessageId.messageId;
-      const deliveredTime = box.lastDeliveredMessageId.deliveredTime;
-      endMessageIdCandidates = [
-        // Strategy 1: Number(bigint)+1 — 精度ロスで丸められたIDが多くのBOXでヒットする
-        { messageId: Number(msgId) + 1, deliveredTime: Number(deliveredTime) + 1 },
-        // Strategy 2: 元の BigInt 値（一部のBOXではこれが正しい）
-        { messageId: msgId, deliveredTime },
-        // Strategy 3: BigInt + 1n（endMessageId が排他的な場合のフォールバック）
-        { messageId: typeof msgId === "bigint" ? msgId + 1n : msgId + 1, deliveredTime: deliveredTime + 1 },
-      ];
-    }
-
-    let raw = null;
-    for (const endMessageId of endMessageIdCandidates) {
-      try {
-        const result = await lineClient.base.talk.getPreviousMessagesV2WithRequest({
-          request: {
-            messageBoxId: box.id,
-            endMessageId,
-            messagesCount: limit,
-          },
-        });
-        if ((result ?? []).length > 0) {
-          raw = result;
-          break;
-        }
-        // 最初の試行結果を保持（全て 0 件の場合に使用）
-        if (!raw) raw = result;
-      } catch {
-        // 型エラー等は無視して次を試行
-      }
-    }
-
-    // E2EE メッセージを復号する（media メッセージは復号前にキャッシュ）
-    const decrypted = await Promise.all(
-      (raw ?? []).map(async (msg) => {
-        if (shouldCacheRawMediaMessage(msg)) {
-          cacheRawMessage(msg);
-        }
-        if (msg.contentMetadata?.e2eeVersion) {
-          try {
-            return await lineClient.base.e2ee.decryptE2EEMessage(msg);
-          } catch {
-            return msg;
-          }
-        }
-        return msg;
-      }),
-    );
-
-    const messages = decrypted
-      .map(formatMessage)
-      .sort((a, b) => toEpochMs(a.createdTime) - toEpochMs(b.createdTime));
-    res.json({ messages, hasMore: (raw ?? []).length === limit });
+    const result = await fetchAndStoreMessages(mid, box, limit, beforeMessageId, beforeDeliveredTime);
+    res.json(result);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -851,6 +890,7 @@ app.post("/api/message/:messageId/unsend", async (req, res) => {
     assertClient();
     const { messageId } = req.params;
     await lineClient.base.talk.unsendMessage({ messageId, seq: 0 });
+    messageStore.markAsUnsent(messageId);
     io.emit("chat:unsend", { messageId });
     res.json({ success: true });
   } catch (e) {
@@ -939,7 +979,10 @@ async function listenWithRestart(client, signal) {
           } catch (e) {
             console.error("[E2EE] decrypt error (skipping message):", e.message);
           }
-          io.emit("chat:message", formatMessage(msg));
+          const formatted = formatMessage(msg);
+          const chatMid = getChatMidFromMessage(formatted, client.base.profile?.mid);
+          if (chatMid) messageStore.save(chatMid, formatted);
+          io.emit("chat:message", formatted);
         }
         // 既読通知イベント
         if (event.type === "NOTIFIED_READ_MESSAGE" || event.type === 55) {
@@ -961,6 +1004,7 @@ async function listenWithRestart(client, signal) {
         if (event.type === "DESTROY_MESSAGE" || event.type === "NOTIFIED_DESTROY_MESSAGE") {
           const messageId = event.param2 ? String(event.param2) : "";
           if (messageId) {
+            messageStore.markAsUnsent(messageId);
             io.emit("chat:unsend", { messageId });
           }
         }

@@ -209,6 +209,7 @@
       fetchProfile();
       loadFriends();
       loadGroups();
+      requestNotificationPermission();
     });
 
     socket.on("auth:pincode", function (payload) {
@@ -254,15 +255,23 @@
     socket.on("chat:unsend", function (data) {
       if (!data || !data.messageId) return;
       var msgId = String(data.messageId);
-      // キャッシュから削除
+      // キャッシュ内のメッセージを取り消し済みに更新
       Object.keys(messageCache).forEach(function (chatMid) {
-        messageCache[chatMid] = messageCache[chatMid].filter(function (m) {
-          return String(m.id) !== msgId;
+        messageCache[chatMid] = messageCache[chatMid].map(function (m) {
+          if (String(m.id) !== msgId) return m;
+          return { id: m.id, from: m.from, to: m.to, text: "", contentType: m.contentType, contentMetadata: { UNSENT: "true" }, location: null, createdTime: m.createdTime };
         });
       });
-      // DOMから削除
+      // DOMの該当バブルを「取り消されました」表示に差し替え
       var el = messageListEl.querySelector('[data-id="' + msgId + '"]');
-      if (el) el.remove();
+      if (el) {
+        var bubble = el.querySelector(".msg-bubble");
+        if (bubble) {
+          bubble.className = "msg-bubble msg-unsent-notice";
+          while (bubble.firstChild) bubble.removeChild(bubble.firstChild);
+          bubble.textContent = "メッセージが取り消されました";
+        }
+      }
       hideUnsendMenu();
     });
 
@@ -288,6 +297,10 @@
 
       cacheMessage(chatMid, msg);
       updateChatLastMessageTime(chatMid, msg.createdTime);
+
+      if (!document.hasFocus() || !selectedChat || String(selectedChat.mid) !== chatMid) {
+        showNewMessageNotification(chatMid, msg);
+      }
 
       if (selectedChat && String(selectedChat.mid) === chatMid) {
         renderMessages(chatMid);
@@ -925,6 +938,24 @@
     return ct === 15 || ct === "LOCATION" || ct === "15";
   }
 
+  function renderTextWithLinks(el, text) {
+    var urlRegex = /https?:\/\/[^\s　「」（）『』【】、。，．]+/g;
+    var parts = text.split(urlRegex);
+    var matches = text.match(urlRegex) || [];
+    for (var i = 0; i < parts.length; i++) {
+      if (parts[i]) el.appendChild(document.createTextNode(parts[i]));
+      if (matches[i]) {
+        var a = document.createElement("a");
+        a.href = matches[i];
+        a.textContent = matches[i];
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+        a.className = "msg-link";
+        el.appendChild(a);
+      }
+    }
+  }
+
   function getContentTypeLabel(msg) {
     var ct = msg && msg.contentType;
     var meta = (msg && msg.contentMetadata) || {};
@@ -1103,7 +1134,7 @@
       } else {
         bubble.className = "msg-bubble";
         if (msg && msg.text) {
-          bubble.textContent = String(msg.text);
+          renderTextWithLinks(bubble, String(msg.text));
         } else {
           bubble.textContent = getContentTypeLabel(msg);
         }
@@ -1908,6 +1939,91 @@
         console.warn("[sw] registration failed:", error);
       });
     });
+
+    navigator.serviceWorker.addEventListener("message", function (event) {
+      if (event.data && event.data.type === "notification:click") {
+        openChatByMid(event.data.chatMid);
+      }
+    });
+  }
+
+  function requestNotificationPermission() {
+    if (!("Notification" in window)) return;
+    if (Notification.permission === "default") {
+      Notification.requestPermission();
+    }
+  }
+
+  function showNewMessageNotification(chatMid, msg) {
+    if (!("Notification" in window)) return;
+    if (Notification.permission !== "granted") return;
+
+    var isGroup = chatMid && chatMid.charAt(0) === "c";
+    var senderMid = msg.from ? String(msg.from) : "";
+    var senderName = senderMid;
+    var i;
+
+    if (contactCache[senderMid] && contactCache[senderMid].name) {
+      senderName = contactCache[senderMid].name;
+    } else {
+      for (i = 0; i < friends.length; i += 1) {
+        if (friends[i] && String(friends[i].mid) === senderMid) {
+          senderName = friends[i].name || senderMid;
+          break;
+        }
+      }
+    }
+
+    var title, body;
+    if (isGroup) {
+      var groupName = chatMid;
+      for (i = 0; i < groups.length; i += 1) {
+        if (groups[i] && String(groups[i].mid) === chatMid) {
+          groupName = groups[i].name || chatMid;
+          break;
+        }
+      }
+      title = groupName;
+      body = senderName + ": " + getMessagePreview(msg);
+    } else {
+      title = senderName;
+      body = getMessagePreview(msg);
+    }
+
+    var opts = {
+      body: body,
+      icon: "/icons/app-icon-192.png",
+      tag: chatMid,
+      renotify: true,
+      data: { chatMid: chatMid }
+    };
+
+    if (navigator.serviceWorker && navigator.serviceWorker.controller) {
+      navigator.serviceWorker.ready.then(function (reg) {
+        reg.showNotification(title, opts);
+      }).catch(function () {
+        try { new Notification(title, opts); } catch (e) {}
+      });
+    } else {
+      try { new Notification(title, opts); } catch (e) {}
+    }
+  }
+
+  function openChatByMid(chatMid) {
+    if (!chatMid) return;
+    var i;
+    for (i = 0; i < friends.length; i += 1) {
+      if (friends[i] && String(friends[i].mid) === chatMid) {
+        openChat({ mid: friends[i].mid, name: friends[i].name, avatarUrl: friends[i].avatarUrl, isGroup: false });
+        return;
+      }
+    }
+    for (i = 0; i < groups.length; i += 1) {
+      if (groups[i] && String(groups[i].mid) === chatMid) {
+        openChat({ mid: groups[i].mid, name: groups[i].name, avatarUrl: groups[i].avatarUrl, isGroup: true });
+        return;
+      }
+    }
   }
 
   function setStatus(msg, type) {

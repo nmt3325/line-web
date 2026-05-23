@@ -6,3 +6,5 @@ package-lock.json
 line-storage.json
 debug.js
 /example
+messages.db
+.claude

@@ -787,6 +787,20 @@ body.standalone-mode #fullscreen-btn {
   border: 1px dashed #ccc;
 }
 
+.msg-bubble .msg-link {
+  color: inherit;
+  text-decoration: underline;
+  word-break: break-all;
+}
+
+.msg.outgoing .msg-bubble .msg-link {
+  color: #e8f4ff;
+}
+
+.msg.incoming .msg-bubble .msg-link {
+  color: #1a73e8;
+}
+
 .loading {
   text-align: center;
   color: #666;
