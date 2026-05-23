@@ -42,6 +42,7 @@
   var logoutBtn = document.getElementById("logout-btn");
   var fullscreenBtn = document.getElementById("fullscreen-btn");
 
+  var chatArea = document.getElementById("chat-area");
   var chatPlaceholder = document.getElementById("chat-placeholder");
   var chatPanel = document.getElementById("chat-panel");
   var backToFriendsBtn = document.getElementById("back-to-friends");
@@ -145,6 +146,12 @@
     messageInput.onkeyup = adjustTextarea;
     messageInput.onkeydown = onMessageKeyDown;
     messageInput.onfocus = onMessageInputFocus;
+    messageInput.onpaste = onMessageInputPaste;
+    if (chatArea) {
+      chatArea.ondragover = onChatAreaDragOver;
+      chatArea.ondrop = onChatAreaDrop;
+      chatArea.ondragleave = onChatAreaDragLeave;
+    }
     if (imageAttachBtn) {
       imageAttachBtn.onclick = onImageAttachClick;
       imageAttachBtn.onkeydown = onComposeControlKeyDown;
@@ -1437,6 +1444,53 @@
       }
     }
     imageInput.click();
+  }
+
+  function onMessageInputPaste(e) {
+    if (!selectedChat || !selectedChat.mid) return;
+    var items = e.clipboardData && e.clipboardData.items;
+    if (!items) return;
+
+    var i;
+    for (i = 0; i < items.length; i += 1) {
+      if (items[i].type.indexOf("image") === 0) {
+        var file = items[i].getAsFile();
+        if (file) {
+          e.preventDefault();
+          sendImageFile(file);
+          return;
+        }
+      }
+    }
+  }
+
+  function onChatAreaDragOver(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    addClass(chatArea, "dragging");
+  }
+
+  function onChatAreaDragLeave(e) {
+    if (e.target === chatArea) {
+      removeClass(chatArea, "dragging");
+    }
+  }
+
+  function onChatAreaDrop(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    removeClass(chatArea, "dragging");
+
+    if (!selectedChat || !selectedChat.mid) return;
+    var files = e.dataTransfer && e.dataTransfer.files;
+    if (!files) return;
+
+    var i;
+    for (i = 0; i < files.length; i += 1) {
+      if (files[i].type.indexOf("image") === 0) {
+        sendImageFile(files[i]);
+      }
+    }
   }
 
   function sendImageFile(file) {

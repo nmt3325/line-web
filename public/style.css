@@ -677,6 +677,12 @@ body.standalone-mode #fullscreen-btn {
   resize: none;
 }
 
+#chat-area.dragging {
+  background-color: rgba(6, 199, 85, 0.15);
+  outline: 2px dashed #06c755;
+  outline-offset: -2px;
+}
+
 .btn-send {
   position: absolute;
   top: 8px;
