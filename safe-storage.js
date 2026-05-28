@@ -136,14 +136,13 @@ export class SafeJsonFileStorage {
       }
       return normalized;
     } catch {
+      const backupPath = `${this.path}.corrupt.${Date.now()}.bak`;
+      await copyFile(this.path, backupPath);
       const repaired = repairFromRaw(text);
       if (Object.keys(repaired).length > 0) {
         await this._writeAllUnlocked(repaired);
         return repaired;
       }
-
-      const backupPath = `${this.path}.corrupt.${Date.now()}.bak`;
-      await copyFile(this.path, backupPath);
       await this._writeAllUnlocked({});
       return {};
     }

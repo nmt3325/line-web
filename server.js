@@ -6,7 +6,6 @@ import { loginWithPassword, loginWithQR, loginWithAuthToken } from "@evex/linejs
 import QRCode from "qrcode";
 import path from "path";
 import { fileURLToPath } from "url";
-import { writeFile } from "fs/promises";
 import { SafeJsonFileStorage } from "./safe-storage.js";
 import { MessageStore } from "./message-store.js";
 
@@ -451,13 +450,15 @@ app.post("/api/auth/logout", async (_req, res) => {
       // Abort active push (HTTP/2) connections and stop polling loop
       stopTalkPolling();
       abortPushConnections(lineClient);
+      // update:authtoken リスナーを先に除去して、clear()後のトークン再書き込みを防ぐ
+      lineClient.base.removeAllListeners?.("update:authtoken");
       lineClient.base.authToken = undefined;
       lineClient = null;
     }
     // Reset the global HTTP/2 agent so the next login gets fresh connections
     setGlobalDispatcher(new Agent({ allowH2: true }));
-    await writeFile("./line-storage.json", "{}");
-    storage = new SafeJsonFileStorage("./line-storage.json");
+    // SafeJsonFileStorage のロックキューを通じて消去する（writeFile直接呼び出しは競合する）
+    await storage.clear();
     res.json({ success: true });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -577,6 +578,9 @@ async function fetchAndStoreMessages(mid, box, limit, beforeMessageId, beforeDel
     // によって一部のチャットBOXで 0 件を返すことがある。
     // Number(messageId)+1 が最も多くのBOXで成功するが、精度ロスで逆に取得できなくなる
     // BOXもあるため、複数の方式をフォールバックで試行する。
+    if (!box.lastDeliveredMessageId?.messageId) {
+      return { messages: [], hasMore: false };
+    }
     const msgId = box.lastDeliveredMessageId.messageId;
     const deliveredTime = box.lastDeliveredMessageId.deliveredTime;
     endMessageIdCandidates = [
@@ -585,7 +589,10 @@ async function fetchAndStoreMessages(mid, box, limit, beforeMessageId, beforeDel
       // Strategy 2: 元の BigInt 値（一部のBOXではこれが正しい）
       { messageId: msgId, deliveredTime },
       // Strategy 3: BigInt + 1n（endMessageId が排他的な場合のフォールバック）
-      { messageId: typeof msgId === "bigint" ? msgId + 1n : msgId + 1, deliveredTime: deliveredTime + 1 },
+      {
+        messageId: typeof msgId === "bigint" ? msgId + 1n : msgId + 1,
+        deliveredTime: typeof deliveredTime === "bigint" ? deliveredTime + 1n : deliveredTime + 1,
+      },
     ];
   }
 
@@ -646,7 +653,7 @@ app.get("/api/chat/:mid/messages", async (req, res) => {
     const beforeMessageId = req.query.beforeMessageId;
     const beforeDeliveredTime = req.query.beforeDeliveredTime;
 
-    // ページネーション: DBに該当範囲のメッセージがあればそれを返す
+    // ページネーション: DBに該当範囲のメッセージがあればそれを返す（古いメッセージはDB優先）
     if (beforeMessageId && beforeDeliveredTime) {
       const cached = messageStore.getMessages(mid, {
         limit,
@@ -658,18 +665,22 @@ app.get("/api/chat/:mid/messages", async (req, res) => {
       }
     }
 
-    // 初回読み込み: DBにメッセージがあればそれを返す
-    if (!beforeMessageId && messageStore.hasMessages(mid)) {
-      const cached = messageStore.getMessages(mid, { limit });
-      return res.json(cached);
-    }
-
-    // DBにない場合は LINE API から取得して保存
+    // LINE API からメッセージボックスを取得（初回・キャッシュ鮮度確認のため常に取得）
     const boxes = await lineClient.base.talk.getMessageBoxes({
       messageBoxListRequest: {},
     });
-    const box = boxes?.messageBoxes?.find((b) => b.id === mid);
+    const box = boxes?.messageBoxes?.find((b) => String(b.id) === mid);
     if (!box) return res.json({ messages: [], hasMore: false });
+
+    // 初回読み込み: DBの最新メッセージがLINEの最新と一致していればDBを返す
+    if (!beforeMessageId && messageStore.hasMessages(mid)) {
+      const boxLastTime = toEpochMs(box?.lastDeliveredMessageId?.deliveredTime);
+      const dbLatestTime = messageStore.getLatestCreatedTime(mid);
+      if (!boxLastTime || dbLatestTime >= boxLastTime - 2000) {
+        const cached = messageStore.getMessages(mid, { limit });
+        return res.json(cached);
+      }
+    }
 
     const result = await fetchAndStoreMessages(mid, box, limit, beforeMessageId, beforeDeliveredTime);
     res.json(result);
@@ -877,8 +888,8 @@ app.post("/api/chat/:mid/send", async (req, res) => {
     };
     if (relatedMessageId) sendOpts.relatedMessageId = String(relatedMessageId);
 
-    await lineClient.base.talk.sendMessage(sendOpts);
-    res.json({ success: true });
+    const sentMessage = await lineClient.base.talk.sendMessage(sendOpts);
+    res.json({ success: true, message: sentMessage ? formatMessage(sentMessage) : null });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

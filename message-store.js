@@ -60,8 +60,8 @@ export class MessageStore {
     const params = [chatMid];
 
     if (beforeCreatedTime != null) {
-      query += " AND (created_time < ? OR (created_time = ? AND id < ?))";
-      params.push(beforeCreatedTime, beforeCreatedTime, beforeId ?? "");
+      query += " AND (created_time < ? OR (created_time = ? AND CAST(id AS INTEGER) < CAST(? AS INTEGER)))";
+      params.push(beforeCreatedTime, beforeCreatedTime, beforeId ?? "0");
     }
 
     query += " ORDER BY created_time DESC, id DESC LIMIT ?";
@@ -81,6 +81,13 @@ export class MessageStore {
 
   hasMessages(chatMid) {
     return !!this.db.prepare("SELECT 1 FROM messages WHERE chat_mid = ? LIMIT 1").get(chatMid);
+  }
+
+  getLatestCreatedTime(chatMid) {
+    const row = this.db.prepare(
+      "SELECT created_time FROM messages WHERE chat_mid = ? ORDER BY created_time DESC LIMIT 1",
+    ).get(chatMid);
+    return row ? row.created_time : 0;
   }
 }
 

@@ -290,6 +290,8 @@
       if (toStr && toStr.charAt(0) === "c") {
         chatMid = toStr;
       } else {
+        // 1:1チャット: myMid未取得時は送受信方向が不明なのでスキップ（再接続後に取得済みになる）
+        if (!myMid) return;
         chatMid = isOutgoing ? toStr : fromStr;
       }
 
@@ -1817,12 +1819,16 @@
       }
 
       var now = (new Date()).getTime();
+      var serverMessage = data && data.message ? data.message : null;
+      var createdTime = toTimestampMs(serverMessage && serverMessage.createdTime);
+      if (!createdTime) createdTime = now;
       var msg = {
-        id: String(now),
-        from: myMid ? myMid : "__me__",
-        to: toMid,
+        id: serverMessage && serverMessage.id ? String(serverMessage.id) : String(now),
+        from: serverMessage && serverMessage.from ? String(serverMessage.from) : (myMid ? myMid : "__me__"),
+        to: serverMessage && serverMessage.to ? String(serverMessage.to) : toMid,
         text: text,
-        createdTime: now
+        contentType: serverMessage && serverMessage.contentType ? serverMessage.contentType : "NONE",
+        createdTime: createdTime
       };
       if (replyId) msg.relatedMessageId = replyId;
 
