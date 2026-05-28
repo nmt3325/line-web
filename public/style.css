@@ -857,6 +857,28 @@ body.standalone-mode #fullscreen-btn {
   border-radius: 12px;
 }
 
+/* システムメッセージ */
+.msg.msg-system {
+  text-align: center;
+  margin: 8px 0;
+  clear: both;
+  padding: 0;
+  -webkit-box-pack: center;
+  -ms-flex-pack: center;
+  justify-content: center;
+}
+
+.msg-system-text {
+  display: inline-block;
+  background: rgba(0, 0, 0, 0.18);
+  color: #fff;
+  font-size: 11px;
+  padding: 4px 12px;
+  border-radius: 12px;
+  word-break: break-all;
+  white-space: pre-wrap;
+}
+
 /* 送信取り消しコンテキストメニュー */
 .unsend-menu {
   display: -webkit-box;

@@ -935,6 +935,11 @@
     return ct === 14 || ct === "FILE" || ct === "14";
   }
 
+  function isSystemMessage(msg) {
+    var ct = msg && msg.contentType;
+    return ct === 18 || ct === "CHATEVENT" || ct === "18";
+  }
+
   function isLocationMessage(msg) {
     var ct = msg && msg.contentType;
     return ct === 15 || ct === "LOCATION" || ct === "15";
@@ -1018,7 +1023,32 @@
     if (li) messageListEl.appendChild(li);
   }
 
+  function buildSystemMessageEl(msg) {
+    var li = document.createElement("li");
+    li.className = "msg msg-system";
+    if (msg && msg.id) li.setAttribute("data-id", String(msg.id));
+    if (msg && msg.createdTime) li.setAttribute("data-time", String(msg.createdTime));
+
+    // テキスト抽出: msg.text → contentMetadata の各フィールド → デフォルト
+    var text = (msg && msg.text) ? String(msg.text) : "";
+    if (!text && msg && msg.contentMetadata) {
+      text = msg.contentMetadata.MESSAGE || msg.contentMetadata.DISPLAY_MESSAGE ||
+             msg.contentMetadata.BODY || msg.contentMetadata.TEXT || "";
+    }
+    if (!text) text = "[システムメッセージ]";
+
+    var span = document.createElement("span");
+    span.className = "msg-system-text";
+    span.textContent = text;
+    li.appendChild(span);
+    return li;
+  }
+
   function buildMessageEl(msg, isGroup) {
+    if (isSystemMessage(msg)) {
+      return buildSystemMessageEl(msg);
+    }
+
     var li = document.createElement("li");
     var bubble = document.createElement("div");
     var time = document.createElement("div");
