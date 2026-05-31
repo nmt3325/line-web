@@ -89,6 +89,18 @@ export class MessageStore {
     ).get(chatMid);
     return row ? row.created_time : 0;
   }
+
+  // 直近の1件を復号済み（保存済み）の状態で取得する。チャット一覧のプレビュー用。
+  getLatestMessage(chatMid) {
+    const row = this.db.prepare(
+      "SELECT * FROM messages WHERE chat_mid = ? ORDER BY created_time DESC, id DESC LIMIT 1",
+    ).get(chatMid);
+    return row ? rowToMessage(row) : null;
+  }
+
+  close() {
+    try { this.db.close(); } catch {}
+  }
 }
 
 function rowToMessage(row) {

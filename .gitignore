@@ -4,7 +4,11 @@ node_modules/
 package-lock.json
 *.log
 line-storage.json
+vapid.json
+push-subscriptions.json
 debug.js
 /example
 messages.db
+messages.db-*
+accounts/
 .claude

@@ -21,6 +21,12 @@
   var DEFAULT_AVATAR = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==";
   var isLegacyIOS6Browser = detectLegacyIOS6Browser();
 
+  // --- 複数アカウント ---
+  var accounts = [];          // [{ id, mid, name, avatarUrl, connected }]
+  var activeAccountId = null; // 現在表示中のアカウントID
+  var accountUnread = {};     // accountId -> 非アクティブ時の新着件数（切替バー用バッジ）
+  var loginAddMode = false;   // ログイン画面が「アカウント追加」モードか
+
   var loginScreen = document.getElementById("login-screen");
   var chatScreen = document.getElementById("chat-screen");
   var loginStatus = document.getElementById("login-status");
@@ -41,6 +47,9 @@
   var groupSearch = document.getElementById("group-search");
   var logoutBtn = document.getElementById("logout-btn");
   var fullscreenBtn = document.getElementById("fullscreen-btn");
+  var accountList = document.getElementById("account-list");
+  var addAccountBtn = document.getElementById("add-account-btn");
+  var loginBackBtn = document.getElementById("login-back-btn");
 
   var chatArea = document.getElementById("chat-area");
   var chatPlaceholder = document.getElementById("chat-placeholder");
@@ -57,14 +66,26 @@
   var imageInput = document.getElementById("image-input");
   var videoAttachBtn = document.getElementById("video-attach-btn");
   var videoInput = document.getElementById("video-input");
+  var fileAttachBtn = document.getElementById("file-attach-btn");
+  var fileInput = document.getElementById("file-input");
+  var chatSubtitle = document.getElementById("chat-subtitle");
+  var scrollBottomBtn = document.getElementById("scroll-bottom-btn");
+  var uploadProgressEl = document.getElementById("upload-progress");
+  var uploadProgressBar = document.getElementById("upload-progress-bar");
+  var uploadProgressLabel = document.getElementById("upload-progress-label");
+
+  // 入力中インジケータの自動消去タイマー（chatMid -> timeoutId）
+  var typingTimers = {};
+  // Push購読が有効なら、アプリ内のOS通知は抑制して二重通知を防ぐ
+  var pushActive = false;
 
   setupAppFrame();
   setupLoginTabs();
   setupSidebarTabs();
   bindEvents();
   bindViewportEvents();
-  socket.emit("auth:auto");
   bindSocketEvents();
+  socket.emit("accounts:list");
   registerServiceWorker();
 
   function setupLoginTabs() {
@@ -135,6 +156,8 @@
     passwordForm.onsubmit = onPasswordSubmit;
     qrStartBtn.onclick = onQrStart;
     logoutBtn.onclick = onLogout;
+    if (addAccountBtn) addAccountBtn.onclick = onAddAccount;
+    if (loginBackBtn) loginBackBtn.onclick = onLoginBack;
     if (fullscreenBtn) fullscreenBtn.onclick = onToggleFullscreen;
     backToFriendsBtn.onclick = onBackToFriends;
     friendSearch.onkeyup = onFriendSearch;
@@ -161,9 +184,15 @@
       videoAttachBtn.onkeydown = onComposeControlKeyDown;
     }
     sendBtn.onkeydown = onComposeControlKeyDown;
+    if (fileAttachBtn) {
+      fileAttachBtn.onclick = onFileAttachClick;
+      fileAttachBtn.onkeydown = onComposeControlKeyDown;
+    }
     if (imageInput) imageInput.onchange = onImageSelected;
     if (videoInput) videoInput.onchange = onVideoSelected;
+    if (fileInput) fileInput.onchange = onFileSelected;
     if (replyCancelBtn) replyCancelBtn.onclick = cancelReply;
+    if (scrollBottomBtn) scrollBottomBtn.onclick = function () { scrollToBottomWithRetry(); hideScrollBottomBtn(); };
     if (messagesContainer) {
       messagesContainer.onscroll = onMessagesScroll;
     }
@@ -172,6 +201,12 @@
   function onMessagesScroll() {
     if (!selectedChat) return;
     var mid = String(selectedChat.mid);
+    // 最新へ戻るボタンの表示制御
+    if (isNearBottom()) {
+      hideScrollBottomBtn();
+    } else {
+      showScrollBottomBtn();
+    }
     if (!hasMoreMessages[mid]) return;
     if (isLoadingMore) return;
     // 上端に近づいたら古いメッセージを読み込む（100px以内）
@@ -180,9 +215,27 @@
     }
   }
 
+  function isNearBottom() {
+    var c = messagesContainer;
+    if (!c) return true;
+    return (c.scrollHeight - c.scrollTop - c.clientHeight) < 140;
+  }
+
+  function showScrollBottomBtn() {
+    if (scrollBottomBtn) removeClass(scrollBottomBtn, "hidden");
+  }
+
+  function hideScrollBottomBtn() {
+    if (scrollBottomBtn) {
+      addClass(scrollBottomBtn, "hidden");
+      scrollBottomBtn.removeAttribute("data-unread");
+    }
+  }
+
   function bindViewportEvents() {
     if (window.addEventListener) {
       window.addEventListener("resize", onViewportChange);
+      window.addEventListener("focus", onWindowFocus);
     }
     if (window.visualViewport && window.visualViewport.addEventListener) {
       window.visualViewport.addEventListener("resize", onViewportChange);
@@ -196,20 +249,38 @@
     scrollToBottomWithRetry();
   }
 
+  // ウィンドウにフォーカスが戻ったら、開いているチャットを既読にする
+  function onWindowFocus() {
+    if (!selectedChat || !selectedChat.mid) return;
+    var mid = String(selectedChat.mid);
+    clearUnread(mid);
+    sendReadReceipt(mid);
+  }
+
   function bindSocketEvents() {
+    socket.on("accounts:update", function (data) {
+      handleAccountsUpdate(data);
+    });
+
     socket.on("auth:none", function () {
       setLoginBusy(false);
+      accounts = [];
+      activeAccountId = null;
+      renderAccountBar();
       closeChatForMobile();
+      setAddMode(false);
       showScreen("login");
     });
 
-    socket.on("auth:success", function () {
-      showScreen("chat");
-      closeChatForMobile();
-      fetchProfile();
-      loadFriends();
-      loadGroups();
-      requestNotificationPermission();
+    socket.on("auth:success", function (payload) {
+      setLoginBusy(false);
+      setAddMode(false);
+      var id = payload && payload.account ? payload.account.id : null;
+      if (id) {
+        // accounts:update が先に届いて accounts に反映済みのはず。新アカウントへ切替。
+        activeAccountId = null;
+        switchAccount(id, true);
+      }
     });
 
     socket.on("auth:pincode", function (payload) {
@@ -240,6 +311,7 @@
 
     socket.on("chat:read", function (data) {
       if (!data || !data.chatMid) return;
+      if (!isActiveAccountEvent(data)) return;
       var chatMid = String(data.chatMid);
       var readerMid = data.readerMid ? String(data.readerMid) : "";
 
@@ -254,6 +326,7 @@
 
     socket.on("chat:unsend", function (data) {
       if (!data || !data.messageId) return;
+      if (!isActiveAccountEvent(data)) return;
       var msgId = String(data.messageId);
       // キャッシュ内のメッセージを取り消し済みに更新
       Object.keys(messageCache).forEach(function (chatMid) {
@@ -278,36 +351,311 @@
     socket.on("chat:message", function (msg) {
       if (!msg) return;
 
+      // 表示中でないアカウント宛の新着は、切替バーのバッジ更新＋通知のみ行う
+      if (!isActiveAccountEvent(msg)) {
+        handleBackgroundMessage(msg);
+        return;
+      }
+
       var fromStr = msg.from ? String(msg.from) : "";
       var toStr = msg.to ? String(msg.to) : "";
       var isOutgoing = myMid && fromStr && fromStr === String(myMid);
+      var isSystem = msg.system === true || isSystemMessage(msg);
 
-      // 自分が送信したメッセージはsendCurrentMessage()で既にUIに追加済みのためスキップ
-      if (isOutgoing) return;
+      // システムメッセージ以外で、自分が送信したものは sendCurrentMessage() で追加済みのためスキップ
+      if (isOutgoing && !isSystem) return;
 
-      // グループチャット: to が 'c' で始まる場合、chatMid = to
+      // チャットの所属を判定
       var chatMid;
       if (toStr && toStr.charAt(0) === "c") {
-        chatMid = toStr;
+        chatMid = toStr; // グループ/チャット
+      } else if (isSystem) {
+        chatMid = toStr || fromStr;
       } else {
-        // 1:1チャット: myMid未取得時は送受信方向が不明なのでスキップ（再接続後に取得済みになる）
+        // 1:1: myMid未取得時は方向不明のためスキップ（再接続後に取得済みになる）
         if (!myMid) return;
         chatMid = isOutgoing ? toStr : fromStr;
       }
-
       if (!chatMid) return;
 
-      cacheMessage(chatMid, msg);
+      var added = cacheMessage(chatMid, msg);
       updateChatLastMessageTime(chatMid, msg.createdTime);
 
-      if (!document.hasFocus() || !selectedChat || String(selectedChat.mid) !== chatMid) {
+      var isActive = selectedChat && String(selectedChat.mid) === chatMid;
+      var focused = document.hasFocus();
+
+      // チャット一覧のプレビュー・未読バッジを更新
+      if (!isSystem && !isOutgoing && (!isActive || !focused)) {
+        bumpUnread(chatMid, msg);
+      } else {
+        setChatPreview(chatMid, getMessagePreviewText(msg));
+      }
+
+      // OS通知（Push未購読時のみ・自分の送信/システム以外）
+      if (!pushActive && !isSystem && !isOutgoing && (!focused || !isActive)) {
         showNewMessageNotification(chatMid, msg);
       }
 
-      if (selectedChat && String(selectedChat.mid) === chatMid) {
-        renderMessages(chatMid);
+      if (isActive) {
+        if (added) appendIncomingMessage(chatMid, msg);
+        // 表示中かつフォーカスありなら既読を送る
+        if (focused && !isOutgoing && !isSystem) {
+          clearUnread(chatMid);
+          sendReadReceipt(chatMid);
+        }
       }
     });
+
+    socket.on("chat:typing", function (data) {
+      if (!data || !data.chatMid) return;
+      if (!isActiveAccountEvent(data)) return;
+      var chatMid = String(data.chatMid);
+      if (!selectedChat || String(selectedChat.mid) !== chatMid) return;
+      var name = getSenderName(data.mid);
+      showTyping(chatMid, name);
+    });
+
+    socket.on("chat:message-edited", function (msg) {
+      if (!msg || !msg.id) return;
+      if (!isActiveAccountEvent(msg)) return;
+      var msgId = String(msg.id);
+      var toStr = msg.to ? String(msg.to) : "";
+      var fromStr = msg.from ? String(msg.from) : "";
+      var chatMid = (toStr && toStr.charAt(0) === "c") ? toStr
+        : (myMid && fromStr === String(myMid) ? toStr : fromStr);
+      if (!chatMid) return;
+      // キャッシュ更新
+      var arr = messageCache[chatMid] || [];
+      for (var i = 0; i < arr.length; i += 1) {
+        if (arr[i] && String(arr[i].id) === msgId) { msg.edited = true; arr[i] = msg; break; }
+      }
+      // DOM更新
+      if (selectedChat && String(selectedChat.mid) === chatMid) {
+        var el = messageListEl.querySelector('[data-id="' + msgId + '"]');
+        var bubble = el && el.querySelector(".msg-bubble");
+        if (bubble) {
+          while (bubble.firstChild) bubble.removeChild(bubble.firstChild);
+          if (msg.text) renderTextWithLinks(bubble, String(msg.text));
+          var editedTag = document.createElement("span");
+          editedTag.className = "msg-edited-tag";
+          editedTag.textContent = " (編集済み)";
+          bubble.appendChild(editedTag);
+        }
+      }
+      setChatPreview(chatMid, getMessagePreviewText(msg));
+    });
+
+    socket.on("chat:reaction", function (data) {
+      if (!data || !data.messageId) return;
+      if (!isActiveAccountEvent(data)) return;
+      // ベストエフォート: 該当メッセージが表示中なら小さなリアクション表示を付与
+      if (!selectedChat) return;
+      var el = messageListEl.querySelector('[data-id="' + String(data.messageId) + '"]');
+      if (!el) return;
+      var existing = el.querySelector(".msg-reaction");
+      if (!existing) {
+        existing = document.createElement("div");
+        existing.className = "msg-reaction";
+        el.appendChild(existing);
+      }
+      existing.textContent = reactionEmoji(data.reactionType);
+    });
+  }
+
+  function reactionEmoji(type) {
+    var map = { "2": "❤️", "3": "👍", "4": "😆", "5": "😲", "6": "😢", "7": "😡" };
+    return map[String(type)] || "👍";
+  }
+
+  // --- 複数アカウント ---
+
+  // イベントが現在表示中のアカウント宛か判定（accountId 無しのレガシーは許可）
+  function isActiveAccountEvent(data) {
+    if (!data || !data.accountId) return true;
+    return String(data.accountId) === String(activeAccountId);
+  }
+
+  function findAccount(id) {
+    if (!id) return null;
+    for (var i = 0; i < accounts.length; i += 1) {
+      if (accounts[i] && String(accounts[i].id) === String(id)) return accounts[i];
+    }
+    return null;
+  }
+
+  var loadedAccountId = null; // 友達/グループを読み込み済みのアカウント
+
+  function handleAccountsUpdate(data) {
+    accounts = (data && data.accounts) ? data.accounts : [];
+
+    if (accounts.length === 0) {
+      activeAccountId = null;
+      loadedAccountId = null;
+      renderAccountBar();
+      setAddMode(false);
+      showScreen("login");
+      return;
+    }
+
+    // ログイン追加モード中はアカウント一覧の更新だけ反映し、画面遷移はしない
+    if (loginAddMode) {
+      renderAccountBar();
+      return;
+    }
+
+    // アクティブ未設定/無効なら、保存済み or 最初の接続済みアカウントを選ぶ
+    if (!activeAccountId || !findAccount(activeAccountId)) {
+      var saved = null;
+      try { saved = localStorage.getItem("activeAccountId"); } catch (e) {}
+      var chosen = (saved && findAccount(saved)) ? saved : null;
+      if (!chosen) {
+        var connected = accounts.filter(function (a) { return a.connected; });
+        chosen = (connected[0] || accounts[0]).id;
+      }
+      switchAccount(chosen, true);
+      return;
+    }
+
+    renderAccountBar();
+    maybeLoadActiveAccount();
+  }
+
+  function switchAccount(id, isInitial) {
+    var acct = findAccount(id);
+    if (!acct) return;
+    if (!isInitial && String(activeAccountId) === String(id)) return;
+    activeAccountId = String(id);
+    try { localStorage.setItem("activeAccountId", activeAccountId); } catch (e) {}
+    accountUnread[activeAccountId] = 0;
+    loadedAccountId = null;
+    resetChatState();
+    renderAccountBar();
+    showScreen("chat");
+    closeChatForMobile();
+    maybeLoadActiveAccount();
+  }
+
+  // アクティブアカウントが接続済みなら友達/グループを読み込む。
+  // 復元中（未接続）なら接続完了時に accounts:update から再度呼ばれる。
+  function maybeLoadActiveAccount() {
+    var acct = findAccount(activeAccountId);
+    if (!acct) return;
+    if (!acct.connected) {
+      setListMessage(friendList, "アカウントに接続中...", false);
+      setListMessage(groupList, "アカウントに接続中...", false);
+      return;
+    }
+    if (loadedAccountId === activeAccountId) return;
+    loadedAccountId = activeAccountId;
+    fetchProfile();
+    loadFriends();
+    loadGroups();
+    ensureNotificationPermission(registerPush);
+  }
+
+  function resetChatState() {
+    selectedChat = null;
+    myMid = null;
+    friends = [];
+    groups = [];
+    messageCache = {};
+    oldestMessageCache = {};
+    hasMoreMessages = {};
+    contactCache = {};
+    readStatusCache = {};
+    groupMembersCache = {};
+    if (messageListEl) clearNode(messageListEl);
+    if (friendList) clearNode(friendList);
+    if (groupList) clearNode(groupList);
+    if (chatPanel) addClass(chatPanel, "hidden");
+    if (chatPlaceholder) removeClass(chatPlaceholder, "hidden");
+    hideScrollBottomBtn();
+  }
+
+  function renderAccountBar() {
+    if (!accountList) return;
+    clearNode(accountList);
+    for (var i = 0; i < accounts.length; i += 1) {
+      accountList.appendChild(buildAccountItem(accounts[i]));
+    }
+  }
+
+  function buildAccountItem(acct) {
+    var li = document.createElement("li");
+    li.className = "account-item";
+    if (String(acct.id) === String(activeAccountId)) addClass(li, "active");
+    if (!acct.connected) addClass(li, "offline");
+    li.setAttribute("data-account-id", acct.id);
+    li.title = (acct.name || acct.mid || "アカウント") + (acct.connected ? "" : "（接続中）");
+
+    var img = document.createElement("img");
+    img.className = "account-avatar";
+    img.src = acct.avatarUrl || DEFAULT_AVATAR;
+    img.alt = acct.name || "";
+    img.onerror = function () { this.src = DEFAULT_AVATAR; };
+    li.appendChild(img);
+
+    var name = document.createElement("span");
+    name.className = "account-name";
+    name.textContent = acct.name || acct.mid || "(未取得)";
+    li.appendChild(name);
+
+    var unread = Number(accountUnread[acct.id]) || 0;
+    if (unread > 0 && String(acct.id) !== String(activeAccountId)) {
+      var badge = document.createElement("span");
+      badge.className = "account-unread";
+      badge.textContent = unread > 99 ? "99+" : String(unread);
+      li.appendChild(badge);
+    }
+
+    li.onclick = function () { switchAccount(acct.id, false); };
+    return li;
+  }
+
+  // 表示中でないアカウント宛の新着: 切替バーのバッジを増やす（OS通知はサーバーのPWA Pushに任せる）
+  function handleBackgroundMessage(msg) {
+    var acctId = msg.accountId ? String(msg.accountId) : "";
+    if (!acctId) return;
+    if (msg.system === true || isSystemMessage(msg)) return;
+    var acct = findAccount(acctId);
+    var fromStr = msg.from ? String(msg.from) : "";
+    if (acct && acct.mid && fromStr === String(acct.mid)) return; // 自分の送信は数えない
+    accountUnread[acctId] = (Number(accountUnread[acctId]) || 0) + 1;
+    renderAccountBar();
+  }
+
+  function onAddAccount() {
+    setAddMode(true);
+    showScreen("login");
+  }
+
+  function onLoginBack() {
+    setAddMode(false);
+    if (activeAccountId && findAccount(activeAccountId)) {
+      showScreen("chat");
+    }
+  }
+
+  // ログイン画面を「アカウント追加」モードに切り替える（戻るボタンの表示など）
+  function setAddMode(on) {
+    loginAddMode = !!on;
+    if (loginBackBtn) {
+      if (loginAddMode && accounts.length > 0) removeClass(loginBackBtn, "hidden");
+      else addClass(loginBackBtn, "hidden");
+    }
+    setStatus("", "");
+    addClass(pincodeBox, "hidden");
+    if (qrContainer) {
+      clearNode(qrContainer);
+      var btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "btn-primary";
+      btn.id = "qr-start-btn";
+      btn.textContent = "QRコードを表示";
+      btn.onclick = onQrStart;
+      qrContainer.appendChild(btn);
+      qrStartBtn = btn;
+    }
   }
 
   function fetchProfile() {
@@ -338,8 +686,12 @@
   }
 
   function onLogout() {
-    if (!window.confirm("ログアウトしますか？")) return;
+    var acct = findAccount(activeAccountId);
+    var label = acct && (acct.name || acct.mid) ? "「" + (acct.name || acct.mid) + "」" : "このアカウント";
+    if (!window.confirm(label + "からログアウトしますか？")) return;
     apiRequest("POST", "/api/auth/logout", null, function () {
+      // ログアウトしたアカウントを忘れ、残りのアカウント or ログイン画面へ
+      try { localStorage.removeItem("activeAccountId"); } catch (e) {}
       window.location.reload();
     });
   }
@@ -380,34 +732,78 @@
   }
 
   function renderFriendItem(friend) {
+    var sub = friend && friend.preview ? String(friend.preview)
+      : (friend && friend.statusMessage ? String(friend.statusMessage) : "");
+    var li = buildChatListItem(friend, sub, false);
+    friendList.appendChild(li);
+  }
+
+  // チャット一覧アイテム共通ビルダー（友達・グループ）
+  function buildChatListItem(chat, subText, isGroup) {
     var li = document.createElement("li");
     var img = document.createElement("img");
     var info = document.createElement("div");
+    var topRow = document.createElement("div");
     var name = document.createElement("div");
-    var status = document.createElement("div");
+    var time = document.createElement("div");
+    var bottomRow = document.createElement("div");
+    var sub = document.createElement("div");
 
+    var mid = chat && chat.mid ? String(chat.mid) : "";
     li.className = "friend-item";
-    li.setAttribute("data-mid", friend && friend.mid ? String(friend.mid) : "");
+    li.setAttribute("data-mid", mid);
     li.onclick = function () {
-      openChat({ mid: friend.mid, name: friend.name, avatarUrl: friend.avatarUrl, isGroup: false });
+      openChat({ mid: chat.mid, name: chat.name, avatarUrl: chat.avatarUrl, isGroup: isGroup });
     };
 
     img.className = "friend-avatar";
-    img.alt = friend && friend.name ? String(friend.name) : "";
-    img.src = friend && friend.avatarUrl ? String(friend.avatarUrl) : DEFAULT_AVATAR;
+    img.alt = chat && chat.name ? String(chat.name) : "";
+    img.src = chat && chat.avatarUrl ? String(chat.avatarUrl) : DEFAULT_AVATAR;
     img.onerror = function () { this.src = DEFAULT_AVATAR; };
 
     info.className = "friend-info";
-    name.className = "friend-name";
-    name.textContent = friend && friend.name ? String(friend.name) : "(no name)";
-    status.className = "friend-status";
-    status.textContent = friend && friend.statusMessage ? String(friend.statusMessage) : "";
 
-    info.appendChild(name);
-    info.appendChild(status);
+    topRow.className = "friend-top-row";
+    name.className = "friend-name";
+    name.textContent = chat && chat.name ? String(chat.name) : "(no name)";
+    time.className = "friend-time";
+    time.textContent = chat && chat.lastMessageTime ? formatListTime(chat.lastMessageTime) : "";
+    topRow.appendChild(name);
+    topRow.appendChild(time);
+
+    bottomRow.className = "friend-bottom-row";
+    sub.className = "friend-status";
+    sub.textContent = subText || "";
+    bottomRow.appendChild(sub);
+
+    var unread = Number(chat && chat.unreadCount) || 0;
+    if (unread > 0) {
+      var badge = document.createElement("span");
+      badge.className = "unread-badge";
+      badge.textContent = unread > 99 ? "99+" : String(unread);
+      bottomRow.appendChild(badge);
+      addClass(li, "has-unread");
+    }
+
+    info.appendChild(topRow);
+    info.appendChild(bottomRow);
     li.appendChild(img);
     li.appendChild(info);
-    friendList.appendChild(li);
+    return li;
+  }
+
+  function formatListTime(ts) {
+    var t = toTimestampMs(ts);
+    if (!t) return "";
+    var d = new Date(t);
+    var now = new Date();
+    var sameDay = d.getFullYear() === now.getFullYear()
+      && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+    if (sameDay) return pad2(d.getHours()) + ":" + pad2(d.getMinutes());
+    var diffDays = Math.round((now.setHours(0, 0, 0, 0) - new Date(t).setHours(0, 0, 0, 0)) / 86400000);
+    if (diffDays === 1) return "昨日";
+    if (diffDays < 7) return ["日", "月", "火", "水", "木", "金", "土"][d.getDay()] + "曜";
+    return (d.getMonth() + 1) + "/" + d.getDate();
   }
 
   function onFriendSearch() {
@@ -440,33 +836,9 @@
   }
 
   function renderGroupItem(group) {
-    var li = document.createElement("li");
-    var img = document.createElement("img");
-    var info = document.createElement("div");
-    var name = document.createElement("div");
-    var sub = document.createElement("div");
-
-    li.className = "friend-item";
-    li.setAttribute("data-mid", group && group.mid ? String(group.mid) : "");
-    li.onclick = function () {
-      openChat({ mid: group.mid, name: group.name, avatarUrl: group.avatarUrl, isGroup: true });
-    };
-
-    img.className = "friend-avatar";
-    img.alt = group && group.name ? String(group.name) : "";
-    img.src = group && group.avatarUrl ? String(group.avatarUrl) : DEFAULT_AVATAR;
-    img.onerror = function () { this.src = DEFAULT_AVATAR; };
-
-    info.className = "friend-info";
-    name.className = "friend-name";
-    name.textContent = group && group.name ? String(group.name) : "(no name)";
-    sub.className = "friend-status";
-    sub.textContent = group && group.memberCount ? group.memberCount + "人" : "";
-
-    info.appendChild(name);
-    info.appendChild(sub);
-    li.appendChild(img);
-    li.appendChild(info);
+    var sub = group && group.preview ? String(group.preview)
+      : (group && group.memberCount ? group.memberCount + "人" : "");
+    var li = buildChatListItem(group, sub, true);
     groupList.appendChild(li);
   }
 
@@ -524,12 +896,21 @@
     return sorted;
   }
 
+  // メッセージをキャッシュに追加。既存IDなら置き換えて false、新規なら true を返す。
   function cacheMessage(chatMid, msg) {
     if (!messageCache[chatMid]) {
       messageCache[chatMid] = [];
     }
-    messageCache[chatMid].push(msg);
-    messageCache[chatMid] = sortMessagesByCreatedTime(messageCache[chatMid]);
+    var arr = messageCache[chatMid];
+    for (var i = 0; i < arr.length; i += 1) {
+      if (arr[i] && String(arr[i].id) === String(msg.id)) {
+        arr[i] = msg;
+        return false;
+      }
+    }
+    arr.push(msg);
+    messageCache[chatMid] = sortMessagesByCreatedTime(arr);
+    return true;
   }
 
   function updateListLastMessageTime(list, mid, timestamp) {
@@ -569,6 +950,143 @@
     }
   }
 
+  // --- 未読バッジ / プレビュー ---
+
+  function findChatInLists(mid) {
+    var i;
+    for (i = 0; i < friends.length; i += 1) {
+      if (friends[i] && String(friends[i].mid) === mid) return friends[i];
+    }
+    for (i = 0; i < groups.length; i += 1) {
+      if (groups[i] && String(groups[i].mid) === mid) return groups[i];
+    }
+    return null;
+  }
+
+  function refreshChatItem(mid) {
+    if (findChatInLists(mid)) {
+      friends = sortChatsByLastMessageTime(friends);
+      groups = sortChatsByLastMessageTime(groups);
+      renderFriendList(getFilteredFriends());
+      renderGroupList(getFilteredGroups());
+      if (selectedChat && selectedChat.mid) highlightActiveItem(String(selectedChat.mid));
+    }
+  }
+
+  function bumpUnread(mid, msg) {
+    var chatMid = String(mid);
+    var chat = findChatInLists(chatMid);
+    if (!chat) return;
+    chat.unreadCount = (Number(chat.unreadCount) || 0) + 1;
+    chat.preview = getMessagePreviewText(msg);
+    refreshChatItem(chatMid);
+  }
+
+  function clearUnread(mid) {
+    var chatMid = String(mid);
+    var chat = findChatInLists(chatMid);
+    if (!chat || !chat.unreadCount) return;
+    chat.unreadCount = 0;
+    refreshChatItem(chatMid);
+  }
+
+  function setChatPreview(mid, text) {
+    var chatMid = String(mid);
+    var chat = findChatInLists(chatMid);
+    if (!chat) return;
+    chat.preview = text || "";
+    refreshChatItem(chatMid);
+  }
+
+  // --- 既読送信 ---
+
+  function sendReadReceipt(mid) {
+    var chatMid = String(mid);
+    var msgs = messageCache[chatMid] || [];
+    var lastId = null;
+    for (var i = msgs.length - 1; i >= 0; i -= 1) {
+      // システムメッセージや楽観追加した一時IDは既読送信に使わない
+      if (msgs[i] && msgs[i].id && String(msgs[i].id).indexOf("sys-") !== 0
+          && /^[0-9]+$/.test(String(msgs[i].id))) {
+        lastId = String(msgs[i].id);
+        break;
+      }
+    }
+    if (!lastId) return;
+    apiRequest("POST", "/api/chat/" + encodeURIComponent(chatMid) + "/read",
+      { lastMessageId: lastId }, function () {});
+  }
+
+  // --- 入力中インジケータ ---
+
+  function showTyping(mid, name) {
+    var chatMid = String(mid);
+    if (!chatSubtitle) return;
+    chatSubtitle.textContent = (name ? name : "相手") + "が入力中…";
+    addClass(chatSubtitle, "typing");
+    if (typingTimers[chatMid]) window.clearTimeout(typingTimers[chatMid]);
+    typingTimers[chatMid] = window.setTimeout(function () {
+      hideTyping(chatMid);
+    }, 6000);
+  }
+
+  function hideTyping(mid) {
+    var chatMid = String(mid);
+    if (typingTimers[chatMid]) {
+      window.clearTimeout(typingTimers[chatMid]);
+      delete typingTimers[chatMid];
+    }
+    if (chatSubtitle && selectedChat && String(selectedChat.mid) === chatMid) {
+      chatSubtitle.textContent = "";
+      removeClass(chatSubtitle, "typing");
+    }
+  }
+
+  // --- 新着メッセージの差分追加（全再描画を避けてちらつきを防ぐ） ---
+
+  function appendIncomingMessage(mid, msg) {
+    var chatMid = String(mid);
+    // 既にDOMにある場合は重複追加しない
+    if (messageListEl.querySelector('[data-id="' + String(msg.id) + '"]')) return;
+
+    var isGroup = selectedChat && selectedChat.isGroup;
+    var wasNearBottom = isNearBottom();
+
+    // 「メッセージがありません」などのプレースホルダを除去
+    var placeholder = messageListEl.querySelector("li.loading");
+    if (placeholder) messageListEl.removeChild(placeholder);
+
+    // 末尾の日付と異なる場合は日付区切りを挿入
+    var msgDateStr = formatDateHeader(msg.createdTime);
+    var lastDate = getLastDateStrInList();
+    if (lastDate !== msgDateStr) {
+      var divider = document.createElement("li");
+      divider.className = "date-divider";
+      var span = document.createElement("span");
+      span.textContent = msgDateStr;
+      divider.appendChild(span);
+      messageListEl.appendChild(divider);
+    }
+
+    var li = buildMessageEl(msg, isGroup);
+    if (li) messageListEl.appendChild(li);
+
+    if (wasNearBottom) {
+      scrollToBottomWithRetry();
+    } else {
+      showScrollBottomBtn();
+      if (scrollBottomBtn) scrollBottomBtn.setAttribute("data-unread", "1");
+    }
+  }
+
+  function getLastDateStrInList() {
+    var items = messageListEl.querySelectorAll("li[data-time]");
+    if (!items || items.length === 0) return null;
+    var t = items[items.length - 1].getAttribute("data-time");
+    if (!t) return null;
+    return formatDateHeader(Number(t));
+  }
+
   // --- Chat ---
 
   function openChat(chat) {
@@ -589,6 +1107,14 @@
 
     setMessageListMessage("メッセージを読み込み中...", false);
     scrollToBottom();
+    hideScrollBottomBtn();
+
+    // 入力中表示・サブタイトルをリセット
+    if (chatSubtitle) { chatSubtitle.textContent = ""; removeClass(chatSubtitle, "typing"); }
+    hideTyping(mid);
+
+    // 開いたチャットの未読をクリア
+    clearUnread(mid);
 
     // チャット切り替え時にページネーション状態をリセット
     isLoadingMore = false;
@@ -625,6 +1151,8 @@
       // 既読情報を取得してからメッセージを描画
       fetchReadStatus(mid, function () {
         renderMessages(mid);
+        // 開いたチャットのメッセージを既読にする
+        if (document.hasFocus()) sendReadReceipt(mid);
       });
       // グループチャットの場合はメンバー情報も取得
       if (selectedChat && selectedChat.isGroup && !groupMembersCache[mid]) {
@@ -1078,10 +1606,11 @@
       bubble.className = "msg-bubble is-image";
       var imgEl = document.createElement("img");
       imgEl.className = "msg-image";
-      imgEl.src = "/api/message/" + encodeURIComponent(msgId) + "/image?preview=1";
+      imgEl.src = withAccount("/api/message/" + encodeURIComponent(msgId) + "/image?preview=1");
       imgEl.alt = "画像";
+      imgEl.loading = "lazy";
       imgEl.onclick = function () {
-        window.open("/api/message/" + encodeURIComponent(msgId) + "/image", "_blank");
+        showImageLightbox(withAccount("/api/message/" + encodeURIComponent(msgId) + "/image"));
       };
       bubble.appendChild(imgEl);
     } else if (isVideoMessage(msg)) {
@@ -1089,7 +1618,7 @@
         bubble.className = "msg-bubble is-video";
         var videoEl = document.createElement("video");
         videoEl.className = "msg-video";
-        videoEl.src = "/api/message/" + encodeURIComponent(msgId) + "/video";
+        videoEl.src = withAccount("/api/message/" + encodeURIComponent(msgId) + "/video");
         videoEl.controls = true;
         videoEl.preload = "metadata";
         videoEl.playsInline = true;
@@ -1125,7 +1654,7 @@
       bubble.className = "msg-bubble is-audio";
       var audioEl = document.createElement("audio");
       audioEl.className = "msg-audio";
-      audioEl.src = "/api/message/" + encodeURIComponent(msgId) + "/audio";
+      audioEl.src = withAccount("/api/message/" + encodeURIComponent(msgId) + "/audio");
       audioEl.controls = true;
       audioEl.preload = "metadata";
       bubble.appendChild(audioEl);
@@ -1133,12 +1662,29 @@
       bubble.className = "msg-bubble is-file";
       var meta = (msg && msg.contentMetadata) || {};
       var fileName = meta.FILE_NAME || "ファイル";
-      var fileSize = meta.FILE_SIZE ? " (" + formatFileSize(Number(meta.FILE_SIZE)) + ")" : "";
+      var fileSizeText = meta.FILE_SIZE ? formatFileSize(Number(meta.FILE_SIZE)) : "";
       var fileLink = document.createElement("a");
-      fileLink.href = "/api/message/" + encodeURIComponent(msgId) + "/file?name=" + encodeURIComponent(fileName);
-      fileLink.textContent = "📎 " + fileName + fileSize;
+      fileLink.href = withAccount("/api/message/" + encodeURIComponent(msgId) + "/file?name=" + encodeURIComponent(fileName));
       fileLink.download = fileName;
-      fileLink.className = "msg-file-link";
+      fileLink.className = "msg-file-card";
+
+      var fileIcon = document.createElement("div");
+      fileIcon.className = "msg-file-icon";
+      fileIcon.textContent = "📄";
+
+      var fileMeta = document.createElement("div");
+      fileMeta.className = "msg-file-meta";
+      var fileNameEl = document.createElement("div");
+      fileNameEl.className = "msg-file-name";
+      fileNameEl.textContent = fileName;
+      var fileSubEl = document.createElement("div");
+      fileSubEl.className = "msg-file-sub";
+      fileSubEl.textContent = (fileSizeText ? fileSizeText + " · " : "") + "タップして保存";
+      fileMeta.appendChild(fileNameEl);
+      fileMeta.appendChild(fileSubEl);
+
+      fileLink.appendChild(fileIcon);
+      fileLink.appendChild(fileMeta);
       bubble.appendChild(fileLink);
     } else if (isLocationMessage(msg)) {
       bubble.className = "msg-bubble is-location";
@@ -1487,6 +2033,49 @@
     }
   }
 
+  // --- 画像ライトボックス（拡大表示 + ダウンロード） ---
+
+  function showImageLightbox(fullUrl) {
+    hideImageLightbox();
+    var overlay = document.createElement("div");
+    overlay.id = "image-lightbox";
+
+    var img = document.createElement("img");
+    img.id = "image-lightbox-img";
+    img.src = fullUrl;
+    img.alt = "画像";
+
+    var bar = document.createElement("div");
+    bar.id = "image-lightbox-bar";
+
+    var dl = document.createElement("a");
+    dl.className = "lightbox-btn";
+    dl.href = fullUrl;
+    dl.setAttribute("download", "image.jpg");
+    dl.textContent = "保存";
+
+    var close = document.createElement("button");
+    close.className = "lightbox-btn";
+    close.type = "button";
+    close.textContent = "閉じる";
+    close.onclick = hideImageLightbox;
+
+    bar.appendChild(dl);
+    bar.appendChild(close);
+    overlay.appendChild(img);
+    overlay.appendChild(bar);
+    document.body.appendChild(overlay);
+
+    overlay.onclick = function (e) {
+      if (e.target === overlay || e.target === img) hideImageLightbox();
+    };
+  }
+
+  function hideImageLightbox() {
+    var existing = document.getElementById("image-lightbox");
+    if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+  }
+
   function onImageSelected() {
     if (!imageInput.files || !imageInput.files[0]) return;
     var file = imageInput.files[0];
@@ -1550,9 +2139,7 @@
 
     var i;
     for (i = 0; i < files.length; i += 1) {
-      if (files[i].type.indexOf("image") === 0) {
-        sendImageFile(files[i]);
-      }
+      sendAnyFile(files[i]);
     }
   }
 
@@ -1560,18 +2147,22 @@
     if (!selectedChat || !selectedChat.mid) return;
     var toMid = String(selectedChat.mid);
 
-    sendBtn.disabled = true;
-    if (imageAttachBtn) imageAttachBtn.disabled = true;
-    if (videoAttachBtn) videoAttachBtn.disabled = true;
+    setUploadButtonsDisabled(true);
+    showUploadProgress("画像を送信中...");
 
     var xhr = new XMLHttpRequest();
     xhr.open("POST", "/api/chat/" + encodeURIComponent(toMid) + "/send-image", true);
+    if (activeAccountId) xhr.setRequestHeader("X-Account-Id", activeAccountId);
     xhr.setRequestHeader("Content-Type", file.type || "image/jpeg");
+    if (xhr.upload) {
+      xhr.upload.onprogress = function (e) {
+        if (e.lengthComputable) setUploadProgress((e.loaded / e.total) * 100);
+      };
+    }
     xhr.onreadystatechange = function () {
       if (xhr.readyState !== 4) return;
-      sendBtn.disabled = false;
-      if (imageAttachBtn) imageAttachBtn.disabled = false;
-      if (videoAttachBtn) videoAttachBtn.disabled = false;
+      setUploadButtonsDisabled(false);
+      hideUploadProgress();
 
       var data = null;
       try { data = JSON.parse(xhr.responseText); } catch (ignore) {}
@@ -1581,25 +2172,7 @@
         return;
       }
 
-      // 送信済み画像をUIに即時表示（サーバー返却の実メッセージIDを優先）
-      var now = (new Date()).getTime();
-      var serverMessage = data && data.message ? data.message : null;
-      var createdTime = toTimestampMs(serverMessage && serverMessage.createdTime);
-      if (!createdTime) createdTime = now;
-      var msg = {
-        id: serverMessage && serverMessage.id ? String(serverMessage.id) : String(now),
-        from: serverMessage && serverMessage.from ? String(serverMessage.from) : (myMid ? myMid : "__me__"),
-        to: serverMessage && serverMessage.to ? String(serverMessage.to) : toMid,
-        text: "",
-        contentType: serverMessage && serverMessage.contentType ? serverMessage.contentType : 1,
-        createdTime: createdTime
-      };
-      cacheMessage(toMid, msg);
-      updateChatLastMessageTime(toMid, createdTime);
-      if (selectedChat && String(selectedChat.mid) === toMid) {
-        renderMessages(toMid);
-        scrollToBottomWithRetry();
-      }
+      addOptimisticOutgoing(toMid, data && data.message, 1, "");
     };
     xhr.send(file);
   }
@@ -1676,20 +2249,24 @@
     if (!selectedChat || !selectedChat.mid) return;
     var toMid = String(selectedChat.mid);
 
-    sendBtn.disabled = true;
-    if (imageAttachBtn) imageAttachBtn.disabled = true;
-    if (videoAttachBtn) videoAttachBtn.disabled = true;
+    setUploadButtonsDisabled(true);
+    showUploadProgress("動画を送信中...");
 
     getVideoDurationMs(file, function (durationMs) {
       var xhr = new XMLHttpRequest();
       xhr.open("POST", "/api/chat/" + encodeURIComponent(toMid) + "/send-video", true);
+      if (activeAccountId) xhr.setRequestHeader("X-Account-Id", activeAccountId);
       xhr.setRequestHeader("Content-Type", file.type || "video/mp4");
       xhr.setRequestHeader("X-Video-Duration-Ms", String(durationMs || 0));
+      if (xhr.upload) {
+        xhr.upload.onprogress = function (e) {
+          if (e.lengthComputable) setUploadProgress((e.loaded / e.total) * 100);
+        };
+      }
       xhr.onreadystatechange = function () {
         if (xhr.readyState !== 4) return;
-        sendBtn.disabled = false;
-        if (imageAttachBtn) imageAttachBtn.disabled = false;
-        if (videoAttachBtn) videoAttachBtn.disabled = false;
+        setUploadButtonsDisabled(false);
+        hideUploadProgress();
 
         var data = null;
         try { data = JSON.parse(xhr.responseText); } catch (ignore) {}
@@ -1699,27 +2276,117 @@
           return;
         }
 
-        var now = (new Date()).getTime();
-        var serverMessage = data && data.message ? data.message : null;
-        var createdTime = toTimestampMs(serverMessage && serverMessage.createdTime);
-        if (!createdTime) createdTime = now;
-        var msg = {
-          id: serverMessage && serverMessage.id ? String(serverMessage.id) : String(now),
-          from: serverMessage && serverMessage.from ? String(serverMessage.from) : (myMid ? myMid : "__me__"),
-          to: serverMessage && serverMessage.to ? String(serverMessage.to) : toMid,
-          text: "",
-          contentType: serverMessage && serverMessage.contentType ? serverMessage.contentType : 2,
-          createdTime: createdTime
-        };
-        cacheMessage(toMid, msg);
-        updateChatLastMessageTime(toMid, createdTime);
-        if (selectedChat && String(selectedChat.mid) === toMid) {
-          renderMessages(toMid);
-          scrollToBottomWithRetry();
-        }
+        addOptimisticOutgoing(toMid, data && data.message, 2, "");
       };
       xhr.send(file);
     });
+  }
+
+  // --- ファイル送信（任意の種類） ---
+
+  function onFileSelected() {
+    if (!fileInput.files || !fileInput.files[0]) return;
+    var file = fileInput.files[0];
+    fileInput.value = "";
+    sendAnyFile(file);
+  }
+
+  function onFileAttachClick() {
+    if (!fileInput || !selectedChat || !selectedChat.mid) return;
+    if (fileAttachBtn && fileAttachBtn.disabled) return;
+    if (typeof fileInput.showPicker === "function") {
+      try { fileInput.showPicker(); return; } catch (ignore) {}
+    }
+    fileInput.click();
+  }
+
+  // 種類に応じて画像/動画/ファイルの適切な送信に振り分ける
+  function sendAnyFile(file) {
+    if (!file) return;
+    var type = file.type || "";
+    if (type.indexOf("image/") === 0) {
+      sendImageFile(file);
+    } else if (type.indexOf("video/") === 0) {
+      sendVideoFile(file);
+    } else {
+      sendGenericFile(file);
+    }
+  }
+
+  function setUploadButtonsDisabled(disabled) {
+    sendBtn.disabled = disabled;
+    if (imageAttachBtn) imageAttachBtn.disabled = disabled;
+    if (videoAttachBtn) videoAttachBtn.disabled = disabled;
+    if (fileAttachBtn) fileAttachBtn.disabled = disabled;
+  }
+
+  function showUploadProgress(label) {
+    if (!uploadProgressEl) return;
+    if (uploadProgressLabel) uploadProgressLabel.textContent = label || "アップロード中...";
+    if (uploadProgressBar) uploadProgressBar.style.width = "0%";
+    removeClass(uploadProgressEl, "hidden");
+  }
+
+  function setUploadProgress(percent) {
+    if (uploadProgressBar) uploadProgressBar.style.width = Math.max(0, Math.min(100, percent)) + "%";
+  }
+
+  function hideUploadProgress() {
+    if (uploadProgressEl) addClass(uploadProgressEl, "hidden");
+  }
+
+  function sendGenericFile(file) {
+    if (!selectedChat || !selectedChat.mid) return;
+    var toMid = String(selectedChat.mid);
+    setUploadButtonsDisabled(true);
+    showUploadProgress(file.name || "ファイル");
+
+    var xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/chat/" + encodeURIComponent(toMid) + "/send-file", true);
+    if (activeAccountId) xhr.setRequestHeader("X-Account-Id", activeAccountId);
+    xhr.setRequestHeader("Content-Type", file.type || "application/octet-stream");
+    xhr.setRequestHeader("X-File-Name", encodeURIComponent(file.name || "file"));
+    if (xhr.upload) {
+      xhr.upload.onprogress = function (e) {
+        if (e.lengthComputable) setUploadProgress((e.loaded / e.total) * 100);
+      };
+    }
+    xhr.onreadystatechange = function () {
+      if (xhr.readyState !== 4) return;
+      setUploadButtonsDisabled(false);
+      hideUploadProgress();
+      var data = null;
+      try { data = JSON.parse(xhr.responseText); } catch (ignore) {}
+      if (xhr.status < 200 || xhr.status >= 300) {
+        window.alert("ファイルの送信に失敗しました: " + (data && data.error ? data.error : xhr.status));
+        return;
+      }
+      addOptimisticOutgoing(toMid, data && data.message, 14, "");
+    };
+    xhr.send(file);
+  }
+
+  // 送信成功時に楽観的にメッセージをUIへ追加する共通処理
+  function addOptimisticOutgoing(toMid, serverMessage, fallbackContentType, text) {
+    var now = (new Date()).getTime();
+    var createdTime = toTimestampMs(serverMessage && serverMessage.createdTime);
+    if (!createdTime) createdTime = now;
+    var msg = {
+      id: serverMessage && serverMessage.id ? String(serverMessage.id) : String(now),
+      from: serverMessage && serverMessage.from ? String(serverMessage.from) : (myMid ? myMid : "__me__"),
+      to: serverMessage && serverMessage.to ? String(serverMessage.to) : toMid,
+      text: text || (serverMessage && serverMessage.text ? serverMessage.text : ""),
+      contentType: serverMessage && serverMessage.contentType ? serverMessage.contentType : fallbackContentType,
+      contentMetadata: serverMessage && serverMessage.contentMetadata ? serverMessage.contentMetadata : {},
+      createdTime: createdTime
+    };
+    cacheMessage(toMid, msg);
+    updateChatLastMessageTime(toMid, createdTime);
+    setChatPreview(toMid, getMessagePreviewText(msg));
+    if (selectedChat && String(selectedChat.mid) === toMid) {
+      renderMessages(toMid);
+      scrollToBottomWithRetry();
+    }
   }
 
   function onSendSubmit(e) {
@@ -1752,6 +2419,7 @@
     var controls = [];
     if (imageAttachBtn) controls.push(imageAttachBtn);
     if (videoAttachBtn) controls.push(videoAttachBtn);
+    if (fileAttachBtn) controls.push(fileAttachBtn);
     controls.push(messageInput);
     controls.push(sendBtn);
 
@@ -1978,16 +2646,70 @@
 
     navigator.serviceWorker.addEventListener("message", function (event) {
       if (event.data && event.data.type === "notification:click") {
-        openChatByMid(event.data.chatMid);
+        var aid = event.data.accountId;
+        var chatMid = event.data.chatMid;
+        if (aid && String(aid) !== String(activeAccountId) && findAccount(aid)) {
+          // 別アカウント宛の通知: アカウントを切り替えてから対象チャットを開く
+          switchAccount(aid, false);
+          if (chatMid) {
+            setTimeout(function () { openChatByMid(chatMid); }, 700);
+          }
+        } else if (chatMid) {
+          openChatByMid(chatMid);
+        }
       }
     });
   }
 
-  function requestNotificationPermission() {
-    if (!("Notification" in window)) return;
-    if (Notification.permission === "default") {
-      Notification.requestPermission();
+  function ensureNotificationPermission(cb) {
+    var done = false;
+    function finish() { if (done) return; done = true; if (cb) cb(); }
+    if (!("Notification" in window)) { finish(); return; }
+    if (Notification.permission !== "default") { finish(); return; }
+    try {
+      var p = Notification.requestPermission(finish);
+      if (p && p.then) p.then(finish);
+    } catch (e) {
+      finish();
     }
+  }
+
+  // --- PWA Push 購読 ---
+
+  function registerPush() {
+    if (!("serviceWorker" in navigator) || !("PushManager" in window)) return;
+    if (!("Notification" in window) || Notification.permission !== "granted") return;
+
+    apiRequest("GET", "/api/push/public-key", null, function (status, data) {
+      if (status < 200 || status >= 300 || !data || !data.publicKey) return;
+      navigator.serviceWorker.ready.then(function (reg) {
+        return reg.pushManager.getSubscription().then(function (existing) {
+          if (existing) return existing;
+          return reg.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: urlBase64ToUint8Array(data.publicKey)
+          });
+        });
+      }).then(function (sub) {
+        if (!sub) return;
+        pushActive = true;
+        apiRequest("POST", "/api/push/subscribe",
+          { subscription: sub.toJSON ? sub.toJSON() : sub }, function () {});
+      }).catch(function (e) {
+        console.warn("[push] subscribe failed:", e && e.message ? e.message : e);
+      });
+    });
+  }
+
+  function urlBase64ToUint8Array(base64String) {
+    var padding = "=".repeat((4 - base64String.length % 4) % 4);
+    var base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+    var rawData = window.atob(base64);
+    var outputArray = new Uint8Array(rawData.length);
+    for (var i = 0; i < rawData.length; i += 1) {
+      outputArray[i] = rawData.charCodeAt(i);
+    }
+    return outputArray;
   }
 
   function showNewMessageNotification(chatMid, msg) {
@@ -2020,10 +2742,10 @@
         }
       }
       title = groupName;
-      body = senderName + ": " + getMessagePreview(msg);
+      body = senderName + ": " + getMessagePreviewText(msg);
     } else {
       title = senderName;
-      body = getMessagePreview(msg);
+      body = getMessagePreviewText(msg);
     }
 
     var opts = {
@@ -2141,9 +2863,17 @@
     messageInput.style.height = newHeight + "px";
   }
 
+  // メディア等の直リンクURLにアクティブアカウントを付与する（ヘッダを使えない <img> 等向け）
+  function withAccount(url) {
+    if (!activeAccountId) return url;
+    var sep = url.indexOf("?") === -1 ? "?" : "&";
+    return url + sep + "account=" + encodeURIComponent(activeAccountId);
+  }
+
   function apiRequest(method, url, body, callback) {
     var xhr = new XMLHttpRequest();
     xhr.open(method, url, true);
+    if (activeAccountId) xhr.setRequestHeader("X-Account-Id", activeAccountId);
     xhr.onreadystatechange = function () {
       var response = null;
       if (xhr.readyState !== 4) return;

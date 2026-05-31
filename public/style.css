@@ -236,6 +236,115 @@ body.standalone-mode #fullscreen-btn {
   display: none;
 }
 
+/* --- アカウント切替バー --- */
+#account-bar {
+  height: 54px;
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid #e5e5e5;
+  background: #fafafa;
+  overflow: hidden;
+}
+
+#account-list {
+  list-style: none;
+  margin: 0;
+  padding: 6px 4px;
+  flex: 1 1 auto;
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  white-space: nowrap;
+}
+
+.account-item {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  max-width: 150px;
+  padding: 4px 10px 4px 4px;
+  border: 1px solid #d8d8d8;
+  border-radius: 18px;
+  background: #fff;
+  cursor: pointer;
+  position: relative;
+}
+
+.account-item.active {
+  border-color: #06c755;
+  background: #e8f9ef;
+}
+
+.account-item.offline {
+  opacity: 0.55;
+}
+
+.account-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: #e0e0e0;
+  margin-right: 6px;
+  flex: 0 0 auto;
+}
+
+.account-name {
+  font-size: 12px;
+  color: #333;
+  max-width: 90px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-item.active .account-name {
+  color: #06914a;
+  font-weight: bold;
+}
+
+.account-unread {
+  margin-left: 6px;
+  min-width: 16px;
+  height: 16px;
+  line-height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: #ff334b;
+  color: #fff;
+  font-size: 10px;
+  text-align: center;
+  flex: 0 0 auto;
+}
+
+#add-account-btn {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  margin: 0 8px;
+  border: 1px dashed #06c755;
+  border-radius: 50%;
+  background: #fff;
+  color: #06c755;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+#login-back-btn {
+  display: block;
+  width: 100%;
+  margin-top: 14px;
+  padding: 10px;
+  border: 1px solid #06c755;
+  border-radius: 6px;
+  background: #fff;
+  color: #06c755;
+  font-size: 14px;
+  cursor: pointer;
+}
+
 .sidebar-tab-bar {
   overflow: hidden;
   border-bottom: 1px solid #e5e5e5;
@@ -262,7 +371,7 @@ body.standalone-mode #fullscreen-btn {
 .sidebar-tab-content {
   display: none;
   position: absolute;
-  top: 104px;
+  top: 158px;
   right: 0;
   bottom: 0;
   left: 0;
@@ -418,15 +527,34 @@ body.standalone-mode #fullscreen-btn {
   background: #d8d8d8;
 }
 
+#chat-header-info {
+  margin-left: 52px;
+  overflow: hidden;
+}
+
 #chat-name {
   display: block;
-  margin-left: 52px;
   font-weight: bold;
   font-size: 14px;
-  line-height: 36px;
+  line-height: 20px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+#chat-subtitle {
+  display: block;
+  font-size: 12px;
+  line-height: 16px;
+  color: #888;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-height: 16px;
+}
+
+#chat-subtitle.typing {
+  color: #06c755;
 }
 
 #messages-container {
@@ -615,7 +743,8 @@ body.standalone-mode #fullscreen-btn {
 }
 
 .btn-img-attach,
-.btn-video-attach {
+.btn-video-attach,
+.btn-file-attach {
   -webkit-appearance: none;
   appearance: none;
   position: absolute;
@@ -649,16 +778,19 @@ body.standalone-mode #fullscreen-btn {
   left: 52px;
 }
 
-.btn-img-attach:hover {
-  background: #eaeaea;
+.btn-file-attach {
+  left: 96px;
 }
 
-.btn-video-attach:hover {
+.btn-img-attach:hover,
+.btn-video-attach:hover,
+.btn-file-attach:hover {
   background: #eaeaea;
 }
 
 .btn-img-attach:focus-visible,
-.btn-video-attach:focus-visible {
+.btn-video-attach:focus-visible,
+.btn-file-attach:focus-visible {
   outline: 2px solid #06c755;
   outline-offset: 1px;
 }
@@ -668,7 +800,7 @@ body.standalone-mode #fullscreen-btn {
   top: 8px;
   right: 78px;
   bottom: 8px;
-  left: 100px;
+  left: 144px;
   border: 1px solid #d0d0d0;
   border-radius: 4px;
   padding: 8px;
@@ -833,7 +965,7 @@ body.standalone-mode #fullscreen-btn {
     display: block;
   }
 
-  #chat-name {
+  #chat-header-info {
     margin-left: 112px;
   }
 
@@ -1033,4 +1165,236 @@ body.standalone-mode #fullscreen-btn {
 .reply-menu-btn:focus {
   background: #f0f9f4;
   outline: none;
+}
+
+/* --- チャット一覧: プレビュー・時刻・未読バッジ --- */
+.friend-top-row {
+  display: -webkit-box;
+  display: -ms-flexbox;
+  display: flex;
+  -webkit-box-align: center;
+  -ms-flex-align: center;
+  align-items: center;
+}
+
+.friend-top-row .friend-name {
+  -webkit-box-flex: 1;
+  -ms-flex: 1;
+  flex: 1;
+  margin-top: 0;
+}
+
+.friend-time {
+  flex-shrink: 0;
+  margin-left: 6px;
+  font-size: 11px;
+  color: #999;
+  white-space: nowrap;
+}
+
+.friend-bottom-row {
+  display: -webkit-box;
+  display: -ms-flexbox;
+  display: flex;
+  -webkit-box-align: center;
+  -ms-flex-align: center;
+  align-items: center;
+  margin-top: 2px;
+}
+
+.friend-bottom-row .friend-status {
+  -webkit-box-flex: 1;
+  -ms-flex: 1;
+  flex: 1;
+  margin-top: 0;
+}
+
+.friend-item.has-unread .friend-name {
+  color: #06c755;
+}
+
+.unread-badge {
+  flex-shrink: 0;
+  margin-left: 6px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: #06c755;
+  color: #fff;
+  font-size: 11px;
+  font-weight: bold;
+  line-height: 18px;
+  text-align: center;
+}
+
+/* --- 最新へ戻るボタン --- */
+#scroll-bottom-btn {
+  position: absolute;
+  right: 14px;
+  bottom: 78px;
+  width: 40px;
+  height: 40px;
+  border: 1px solid #d4d4d4;
+  border-radius: 20px;
+  background: #fff;
+  color: #06c755;
+  font-size: 18px;
+  line-height: 38px;
+  text-align: center;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+  z-index: 20;
+}
+
+#scroll-bottom-btn[data-unread] {
+  border-color: #06c755;
+  background: #06c755;
+  color: #fff;
+}
+
+/* --- アップロード進捗 --- */
+#upload-progress {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 64px;
+  background: #fff;
+  border-top: 1px solid #e0e0e0;
+  padding: 8px 12px;
+  z-index: 15;
+}
+
+#upload-progress-label {
+  font-size: 12px;
+  color: #555;
+  margin-bottom: 5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#upload-progress-track {
+  height: 6px;
+  border-radius: 3px;
+  background: #eee;
+  overflow: hidden;
+}
+
+#upload-progress-bar {
+  height: 100%;
+  width: 0;
+  background: #06c755;
+  -webkit-transition: width 0.15s ease;
+  transition: width 0.15s ease;
+}
+
+/* --- ファイルメッセージ カード --- */
+.msg-bubble.is-file {
+  padding: 0;
+}
+
+.msg-file-card {
+  display: -webkit-box;
+  display: -ms-flexbox;
+  display: flex;
+  -webkit-box-align: center;
+  -ms-flex-align: center;
+  align-items: center;
+  padding: 8px 12px;
+  text-decoration: none;
+  color: inherit;
+  min-width: 180px;
+  max-width: 260px;
+}
+
+.msg-file-icon {
+  font-size: 26px;
+  margin-right: 10px;
+  flex-shrink: 0;
+}
+
+.msg-file-meta {
+  overflow: hidden;
+}
+
+.msg-file-name {
+  font-size: 13px;
+  font-weight: bold;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.msg-file-sub {
+  font-size: 11px;
+  color: #888;
+  margin-top: 2px;
+}
+
+/* --- 画像ライトボックス --- */
+#image-lightbox {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 1100;
+  background: rgba(0, 0, 0, 0.88);
+  display: -webkit-box;
+  display: -ms-flexbox;
+  display: flex;
+  -webkit-box-align: center;
+  -ms-flex-align: center;
+  align-items: center;
+  -webkit-box-pack: center;
+  -ms-flex-pack: center;
+  justify-content: center;
+}
+
+#image-lightbox-img {
+  max-width: 94%;
+  max-height: 84%;
+  border-radius: 4px;
+}
+
+#image-lightbox-bar {
+  position: absolute;
+  bottom: 24px;
+  left: 0;
+  right: 0;
+  text-align: center;
+}
+
+.lightbox-btn {
+  display: inline-block;
+  margin: 0 6px;
+  padding: 9px 20px;
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  font-size: 14px;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.lightbox-btn:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+/* --- リアクション / 編集済み --- */
+.msg-reaction {
+  display: inline-block;
+  margin-top: 2px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: #fff;
+  border: 1px solid #e0e0e0;
+  font-size: 12px;
+}
+
+.msg-edited-tag {
+  font-size: 10px;
+  color: #999;
 }

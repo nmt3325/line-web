@@ -56,6 +56,8 @@
     </div>
 
     <div id="login-status" class="status-msg"></div>
+
+    <button type="button" id="login-back-btn" class="btn-secondary hidden">既存のアカウントに戻る</button>
   </div>
 </div>
 
@@ -65,6 +67,10 @@
       <span>LINE Web Chat</span>
       <button type="button" id="logout-btn">ログアウト</button>
       <button type="button" id="fullscreen-btn">全画面</button>
+    </div>
+    <div id="account-bar">
+      <ul id="account-list"></ul>
+      <button type="button" id="add-account-btn" title="アカウントを追加" aria-label="アカウントを追加">＋</button>
     </div>
     <div class="sidebar-tab-bar">
       <button type="button" class="sidebar-tab active" data-sidebar-tab="friends">友達</button>
@@ -93,11 +99,19 @@
       <div id="chat-header">
         <button type="button" id="back-to-friends">戻る</button>
         <img id="chat-avatar" src="" alt="">
-        <span id="chat-name"></span>
+        <div id="chat-header-info">
+          <span id="chat-name"></span>
+          <span id="chat-subtitle"></span>
+        </div>
       </div>
       <div id="messages-container">
         <div id="load-more-indicator" style="display:none;text-align:center;padding:8px;color:#888;font-size:13px;"></div>
         <ul id="message-list"></ul>
+      </div>
+      <button type="button" id="scroll-bottom-btn" class="hidden" aria-label="最新メッセージへ">⬇</button>
+      <div id="upload-progress" class="hidden">
+        <div id="upload-progress-label">アップロード中...</div>
+        <div id="upload-progress-track"><div id="upload-progress-bar"></div></div>
       </div>
       <div id="reply-preview" class="hidden">
         <div id="reply-preview-content">
@@ -114,6 +128,10 @@
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="14" height="12" rx="2"/><polygon points="21 8 17 10.8 17 13.2 21 16 21 8"/></svg>
         </button>
         <input type="file" id="video-input" accept="video/*" style="display:none">
+        <button type="button" class="btn-file-attach" id="file-attach-btn" title="ファイルを送信" aria-label="ファイルを送信">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+        </button>
+        <input type="file" id="file-input" style="display:none">
         <textarea id="message-input" placeholder="メッセージを入力" rows="2"></textarea>
         <button type="submit" class="btn-send" id="send-btn">送信</button>
       </form>

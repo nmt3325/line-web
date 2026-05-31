@@ -26,11 +26,9 @@ url:"https://notebooklm.google.com/notebook/d303cee5-b28b-424c-8c6a-a89a23c2a6ca
 /Users/nmt3325/Documents/Projects/line-web/linejs/example
 このフォルダには例が載っています。 -->
 
-<!-- ## デバッグについて
+## デバッグについて
 .envに
-user1=メアド１
-password1=パスワード1
-user2=メアド2
-password2=パスワード2
-の形式でログイン情報が2アカウント分保存してあるのでデバッグに必要であれば利用してください。
- -->
+user=メアド
+password=パスワード
+の形式でログイン情報が保存してあるのでデバッグに必要であれば利用してください。
+

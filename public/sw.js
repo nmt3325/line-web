@@ -1,4 +1,4 @@
-const STATIC_CACHE = "line-web-static-v5";
+const STATIC_CACHE = "line-web-static-v7";
 const APP_SHELL = [
   "/",
   "/index.html",
@@ -88,21 +88,58 @@ self.addEventListener("fetch", (event) => {
   );
 });
 
+self.addEventListener("push", (event) => {
+  let data = {};
+  try {
+    data = event.data ? event.data.json() : {};
+  } catch (e) {
+    data = { body: event.data ? event.data.text() : "" };
+  }
+
+  const title = data.title || "LINE Web Chat";
+  const chatMid = data.chatMid || "";
+  const accountId = data.accountId || "";
+  const options = {
+    body: data.body || "新しいメッセージ",
+    icon: "/icons/app-icon-192.png",
+    badge: "/icons/app-icon-192.png",
+    tag: data.tag || (accountId + ":" + chatMid) || "line-web",
+    renotify: true,
+    data: { chatMid: chatMid, accountId: accountId },
+  };
+
+  event.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {
+      // アプリがフォーカスされている場合は OS 通知を抑制し、アプリ内処理に委ねる（二重通知防止）
+      const focused = clients.filter((c) => c.focused);
+      if (focused.length > 0) {
+        for (const client of focused) {
+          client.postMessage({ type: "push:message", chatMid: chatMid, accountId: accountId });
+        }
+        return undefined;
+      }
+      return self.registration.showNotification(title, options);
+    }),
+  );
+});
+
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
-  const chatMid = event.notification.data && event.notification.data.chatMid;
+  const info = event.notification.data || {};
+  const chatMid = info.chatMid;
+  const accountId = info.accountId;
   event.waitUntil(
     self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {
       for (const client of clients) {
         if ("focus" in client) {
           client.focus();
-          if (chatMid) client.postMessage({ type: "notification:click", chatMid });
+          client.postMessage({ type: "notification:click", chatMid: chatMid, accountId: accountId });
           return;
         }
       }
       if (self.clients.openWindow) {
         return self.clients.openWindow("/").then((client) => {
-          if (client && chatMid) client.postMessage({ type: "notification:click", chatMid });
+          if (client) client.postMessage({ type: "notification:click", chatMid: chatMid, accountId: accountId });
         });
       }
     }),
