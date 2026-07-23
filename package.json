@@ -1,7 +1,20 @@
 {
   "name": "line-web-chat",
   "version": "1.0.0",
+  "description": "@evex/linejs を使った LINE の非公式 Web チャットクライアント（マルチアカウント・PWA 対応）",
   "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "line",
+    "linejs",
+    "chat",
+    "pwa",
+    "express",
+    "socket.io"
+  ],
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js"
