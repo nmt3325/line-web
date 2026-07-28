@@ -22,7 +22,7 @@ LINE を Web で利用するための非公式チャットアプリです。
 - Node.js（ESM）
 - Express
 - Socket.IO
-- `@evex/linejs`
+- `@evex/linejs`（v3 系。`package.json` では `npm:@jsr/evex__linejs@^3.2.1` を指定）
 - Undici（HTTP/2 有効）
 - QRCode
 
@@ -65,7 +65,7 @@ npm run dev
 ## API エンドポイント（主要）
 
 - `GET /api/auth/status` 認証状態確認
-- `POST /api/auth/token` トークンログイン
+- （未実装）トークンログインの REST エンドポイントは存在しません。保存済みトークンによる復元は起動時に自動で行われます
 - `POST /api/auth/logout` ログアウト
 - `GET /api/profile` 自分の MID 取得
 - `GET /api/friends` 友達一覧
